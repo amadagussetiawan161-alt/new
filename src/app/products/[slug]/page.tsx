@@ -12,6 +12,25 @@ interface BuilderBlock {
   content: Record<string, any>
 }
 
+interface Action {
+  id: string
+  type: string
+  config: Record<string, any>
+  enabled: boolean
+}
+
+function getProductPurchaseUrl(actions: Action[], productSlug: string): string {
+  const purchaseAction = actions?.find((a: Action) => a.enabled && a.type === 'product_purchase')
+  if (purchaseAction?.config?.productId) {
+    const { productId, variantId, productSlug: actionSlug } = purchaseAction.config
+    const productRef = actionSlug || productId
+    let url = `/checkout?product=${productRef}&action=product_purchase`
+    if (variantId) url += `&variant=${variantId}`
+    return url
+  }
+  return `/checkout?product=${productSlug}`
+}
+
 export default async function ProductPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params
   const supabase = await createServerClient()
@@ -31,7 +50,11 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
     }
   }
 
-  const getCtaUrl = () => {
+  const getCtaUrl = (actions?: Action[]) => {
+    if (actions?.length) {
+      const url = getProductPurchaseUrl(actions, product.slug)
+      if (url !== `/checkout?product=${product.slug}`) return url
+    }
     switch (product.cta_type) {
       case 'whatsapp': return product.whatsapp_number ? `https://wa.me/${product.whatsapp_number}` : '#'
       case 'external_link': return product.external_url || '#'
@@ -52,7 +75,7 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
   const isExternal = product.cta_type === 'whatsapp' || product.cta_type === 'external_link'
 
   if (hasPublishedBuilder) {
-    return <BuilderProductPage product={product} blocks={builderContent} />
+    return <BuilderProductPage product={product} blocks={builderContent} getCtaUrl={getCtaUrl} getCtaLabel={getCtaLabel} />
   }
 
   return (
@@ -114,25 +137,16 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
   )
 }
 
-function BuilderProductPage({ product, blocks }: { product: any; blocks: BuilderBlock[] }) {
+function BuilderProductPage({ product, blocks, getCtaUrl, getCtaLabel }: { product: any; blocks: BuilderBlock[]; getCtaUrl: (actions?: Action[]) => string; getCtaLabel: () => string }) {
   const isAvailable = product.status === 'active'
 
-  const getCtaUrl = () => {
-    switch (product.cta_type) {
-      case 'whatsapp': return product.whatsapp_number ? `https://wa.me/${product.whatsapp_number}` : '#'
-      case 'external_link': return product.external_url || '#'
-      case 'order_form': return '#'
-      default: return `/checkout?product=${product.slug}`
+  const resolveCtaUrl = (blockContent: Record<string, any>) => {
+    const actions = blockContent.actions as Action[] | undefined
+    if (actions?.length) {
+      const url = getProductPurchaseUrl(actions, product.slug)
+      if (url !== `/checkout?product=${product.slug}`) return url
     }
-  }
-
-  const getCtaLabel = () => {
-    switch (product.cta_type) {
-      case 'whatsapp': return 'Chat on WhatsApp'
-      case 'external_link': return 'Visit Link'
-      case 'order_form': return 'Order Now'
-      default: return 'Buy Now'
-    }
+    return getCtaUrl(actions)
   }
 
   return (
@@ -162,7 +176,7 @@ function BuilderProductPage({ product, blocks }: { product: any; blocks: Builder
               <div className={`relative z-10 px-4 py-20 max-w-3xl mx-auto ${alignClass}`}>
                 <h1 className="text-4xl md:text-5xl font-bold mb-4" style={{ fontSize: content.fontSize ? `${content.fontSize}px` : undefined }}>{content.title}</h1>
                 <p className="text-lg text-white/80 mb-8 max-w-xl mx-auto">{content.subtitle}</p>
-                {isAvailable && <a href={getCtaUrl()} className="inline-block px-6 py-3 bg-white text-slate-900 rounded-lg font-semibold hover:bg-white/90 transition-colors">{content.buttonText || getCtaLabel()}</a>}
+                {isAvailable && <a href={resolveCtaUrl(content)} className="inline-block px-6 py-3 bg-white text-slate-900 rounded-lg font-semibold hover:bg-white/90 transition-colors">{content.buttonText || getCtaLabel()}</a>}
                 {!isAvailable && <button disabled className="inline-block px-6 py-3 bg-white/50 text-white rounded-lg font-semibold cursor-not-allowed">{product.status === 'sold_out' ? 'Sold Out' : 'Coming Soon'}</button>}
               </div>
             </section>
@@ -185,7 +199,7 @@ function BuilderProductPage({ product, blocks }: { product: any; blocks: Builder
             const btnRounded = content.rounded === 'none' ? 'rounded-none' : content.rounded === 'full' ? 'rounded-full' : 'rounded-lg'
             return (
               <div key={block.id} className={`py-4 px-4 ${alignClass}`}>
-                <a href={content.url || getCtaUrl()} className={`inline-block font-semibold ${btnStyle} ${btnSize} ${btnRounded} hover:opacity-90 transition-opacity`}>
+                <a href={content.url || resolveCtaUrl(content)} className={`inline-block font-semibold ${btnStyle} ${btnSize} ${btnRounded} hover:opacity-90 transition-opacity`}>
                   {content.text}
                 </a>
               </div>
@@ -237,7 +251,7 @@ function BuilderProductPage({ product, blocks }: { product: any; blocks: Builder
                     <li key={i} className="flex items-center gap-2"><Check className="h-4 w-4 text-primary" />{f}</li>
                   ))}
                 </ul>
-                {isAvailable && <a href={getCtaUrl()} className="inline-block w-full py-3 bg-primary text-primary-foreground rounded-lg font-semibold hover:opacity-90">{content.buttonText || getCtaLabel()}</a>}
+                {isAvailable && <a href={resolveCtaUrl(content)} className="inline-block w-full py-3 bg-primary text-primary-foreground rounded-lg font-semibold hover:opacity-90">{content.buttonText || getCtaLabel()}</a>}
                 {!isAvailable && <button disabled className="w-full py-3 bg-muted text-muted-foreground rounded-lg font-semibold cursor-not-allowed">{product.status === 'sold_out' ? 'Sold Out' : 'Coming Soon'}</button>}
               </div>
             </div>
@@ -284,7 +298,7 @@ function BuilderProductPage({ product, blocks }: { product: any; blocks: Builder
             <div key={block.id} className={`py-12 px-4 ${alignClass}`} style={{ background: content.bgColor || '#f1f5f9' }}>
               <h3 className="text-xl font-bold mb-2">{content.title}</h3>
               <p className="mb-4">{content.text}</p>
-              {isAvailable && <a href={getCtaUrl()} className="inline-block px-6 py-3 bg-primary text-primary-foreground rounded-lg font-semibold hover:opacity-90">{content.buttonText || getCtaLabel()}</a>}
+              {isAvailable && <a href={resolveCtaUrl(content)} className="inline-block px-6 py-3 bg-primary text-primary-foreground rounded-lg font-semibold hover:opacity-90">{content.buttonText || getCtaLabel()}</a>}
               {!isAvailable && <button disabled className="px-6 py-3 bg-muted text-muted-foreground rounded-lg font-semibold cursor-not-allowed">{product.status === 'sold_out' ? 'Sold Out' : 'Coming Soon'}</button>}
             </div>
           )
@@ -327,7 +341,7 @@ function BuilderProductPage({ product, blocks }: { product: any; blocks: Builder
             return (
               <div key={block.id} className={`py-4 px-4 ${alignClass}`}>
                 {isAvailable ? (
-                  <a href={getCtaUrl()} className={`${btnWidth} font-semibold ${btnStyle} ${btnSize} ${btnRounded} hover:opacity-90 transition-opacity`}>
+                  <a href={resolveCtaUrl(content)} className={`${btnWidth} font-semibold ${btnStyle} ${btnSize} ${btnRounded} hover:opacity-90 transition-opacity`}>
                     {content.text || getCtaLabel()}
                   </a>
                 ) : (

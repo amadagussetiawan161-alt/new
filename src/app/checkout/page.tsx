@@ -23,6 +23,7 @@ function CheckoutContent() {
   const searchParams = useSearchParams()
   const productId = searchParams.get('product')
   const variantId = searchParams.get('variant')
+  const actionType = searchParams.get('action')
 
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
@@ -63,6 +64,9 @@ function CheckoutContent() {
       setPaymentAccounts(accounts || [])
       if (accounts?.length > 0) setSelectedAccount(accounts[0])
 
+      // Debug logging for Product Purchase Action
+      console.log('[Checkout] URL Params:', { productId, variantId, actionType })
+
       // Create Purchase Context
       if (productId) {
         const purchaseContext = await createPurchaseContext(supabase, {
@@ -71,13 +75,31 @@ function CheckoutContent() {
         })
         purchaseContext.user_id = user.id
         setContext(purchaseContext)
-        console.log('[Checkout] Purchase Context:', purchaseContext)
+
+        // Debug logging
+        console.log('[Checkout] Selected Product ID:', purchaseContext.product_id)
+        console.log('[Checkout] Selected Variant ID:', purchaseContext.variant_id)
+        console.log('[Checkout] Product Purchase Action:', actionType === 'product_purchase' ? 'product_purchase' : 'none')
+        console.log('[Checkout] Checkout Context:', {
+          product_id: purchaseContext.product_id,
+          variant_id: purchaseContext.variant_id,
+          product_name: purchaseContext.product_name,
+          variant_name: purchaseContext.variant_name,
+          price: purchaseContext.price,
+          validated: purchaseContext.validated
+        })
+
+        if (!purchaseContext.validated) {
+          console.warn('[Checkout] Context validation failed. Reason: Product or variant not found for productId=', productId, 'variantId=', variantId)
+        }
+      } else {
+        console.warn('[Checkout] No productId in URL params. Cannot create Purchase Context.')
       }
 
       setLoading(false)
     }
     fetchData()
-  }, [router, productId, variantId, supabase])
+  }, [router, productId, variantId, actionType, supabase])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -264,9 +286,15 @@ function CheckoutContent() {
           <div className="flex items-start gap-3">
             <AlertCircle className="h-5 w-5 text-red-500 mt-0.5" />
             <div>
-              <p className="font-medium text-red-700">Produk Belum Dikonfigurasi</p>
+              <p className="font-medium text-red-700">
+                {actionType === 'product_purchase'
+                  ? 'Produk atau Varian Tidak Ditemukan'
+                  : 'CTA belum terhubung dengan Product Purchase Action.'}
+              </p>
               <p className="text-sm text-red-600 mt-1">
-                Produk belum dikonfigurasi pada Product Purchase Action.
+                {actionType === 'product_purchase'
+                  ? 'Produk atau varian yang dikonfigurasi dalam Product Purchase Action tidak ditemukan. Silakan periksa konfigurasi di Page Builder.'
+                  : 'CTA belum terhubung dengan Product Purchase Action. Silakan konfigurasi Product Purchase Action di Page Builder.'}
               </p>
             </div>
           </div>
