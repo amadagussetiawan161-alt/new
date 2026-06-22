@@ -497,7 +497,7 @@ function ProductPurchaseConfig({
   useEffect(() => {
     supabase
       .from('products')
-      .select('id, name, slug, variants_enabled')
+      .select('id, name, slug, variants_enabled, price')
       .eq('status', 'active')
       .order('name')
       .then(({ data }) => setProducts(data || []))
@@ -523,16 +523,39 @@ function ProductPurchaseConfig({
       .then(({ data }) => setVariants(data || []))
   }, [action.config.productId, products])
 
-  const update = (key: string, value: any) => {
-    onChange({ ...action.config, [key]: value })
-    if (key === 'productId') {
-      onChange({ ...action.config, productId: value, variantId: null })
-    }
+  const updateProduct = (productId: string | null) => {
+    const product = products.find((p) => p.id === productId)
+    onChange({
+      ...action.config,
+      productId,
+      variantId: null,
+      productSlug: product?.slug || null,
+      productName: product?.name || null,
+      variantName: null,
+      variantPrice: null
+    })
+  }
+
+  const updateVariant = (variantId: string | null) => {
+    const variant = variants.find((v) => v.id === variantId)
+    onChange({
+      ...action.config,
+      variantId,
+      variantName: variant?.name || null,
+      variantPrice: variant?.price || null
+    })
   }
 
   const product = products.find((p) => p.id === action.config.productId)
   const needsVariant = product?.variants_enabled && variants.length > 0
   const variantMissing = needsVariant && !action.config.variantId
+
+  // Get selected variant info
+  const selectedVariant = variants.find((v) => v.id === action.config.variantId)
+
+  // Format price for display
+  const formatIDR = (price: number) =>
+    new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(price)
 
   return (
     <>
@@ -541,7 +564,7 @@ function ProductPurchaseConfig({
         <select
           className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-xs h-8"
           value={action.config.productId || ''}
-          onChange={(e) => update('productId', e.target.value || null)}
+          onChange={(e) => updateProduct(e.target.value || null)}
         >
           <option value="">Select Product</option>
           {products.map((p) => (
@@ -558,12 +581,12 @@ function ProductPurchaseConfig({
           <select
             className={`w-full rounded-md border bg-background px-2 py-1.5 text-xs h-8 ${variantMissing ? 'border-destructive' : 'border-input'}`}
             value={action.config.variantId || ''}
-            onChange={(e) => update('variantId', e.target.value || null)}
+            onChange={(e) => updateVariant(e.target.value || null)}
           >
             <option value="">Select Variant</option>
             {variants.map((v) => (
               <option key={v.id} value={v.id}>
-                {v.name} - ${v.price}
+                {v.name} - {formatIDR(v.price)}
               </option>
             ))}
           </select>
@@ -577,6 +600,26 @@ function ProductPurchaseConfig({
         <p className="text-xs text-muted-foreground">
           Product has no variants. Default checkout will be used.
         </p>
+      )}
+
+      {/* Debug/Context Preview */}
+      {action.config.productId && action.config.productName && (
+        <div className="mt-2 p-2 bg-blue-50 rounded-lg border border-blue-100">
+          <p className="text-xs font-medium text-blue-700 mb-1">Purchase Context:</p>
+          <div className="space-y-0.5 text-xs text-blue-600">
+            <p>Product: <span className="font-medium text-blue-800">{action.config.productName}</span></p>
+            {action.config.variantId && action.config.variantName && (
+              <p>Variant: <span className="font-medium text-blue-800">{action.config.variantName}</span></p>
+            )}
+            <p>Price: <span className="font-bold text-blue-800">
+              {action.config.variantId && action.config.variantPrice
+                ? formatIDR(action.config.variantPrice)
+                : product?.price
+                ? formatIDR(product.price)
+                : 'Not set'}
+            </span></p>
+          </div>
+        </div>
       )}
     </>
   )

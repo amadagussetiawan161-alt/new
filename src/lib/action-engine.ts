@@ -72,7 +72,14 @@ export function getDefaultActionConfig(type: ActionType): Record<string, any> {
     case 'scroll_to_section':
       return { sectionId: '', offset: 0 }
     case 'product_purchase':
-      return { productId: null, variantId: null }
+      return {
+        productId: null,
+        variantId: null,
+        productSlug: null,
+        productName: null,
+        variantName: null,
+        variantPrice: null
+      }
     case 'whatsapp_chat':
       return { phone: '', message: '' }
     case 'whatsapp_inquiry':

@@ -120,6 +120,8 @@ function CheckoutContent() {
 
       // Load cart or product from Product Purchase Context
       if (productIdOrSlug) {
+        console.log('[Checkout] Loading Product Purchase Context:', { productIdOrSlug, variantIdParam })
+
         // Try to find product by ID first, then by slug
         let product = null
         const { data: byId } = await supabase
@@ -130,6 +132,7 @@ function CheckoutContent() {
 
         if (byId) {
           product = byId
+          console.log('[Checkout] Product found by ID:', product)
         } else {
           const { data: bySlug } = await supabase
             .from('products')
@@ -137,6 +140,7 @@ function CheckoutContent() {
             .eq('slug', productIdOrSlug)
             .single()
           product = bySlug
+          console.log('[Checkout] Product found by slug:', product)
         }
 
         if (product) {
@@ -146,7 +150,8 @@ function CheckoutContent() {
 
           // If variant specified, get variant price
           if (variantIdParam) {
-            const { data: variant } = await supabase
+            console.log('[Checkout] Looking for variant:', variantIdParam)
+            const { data: variant, error: variantError } = await supabase
               .from('product_variants')
               .select('id, name, price')
               .eq('id', variantIdParam)
@@ -154,10 +159,68 @@ function CheckoutContent() {
               .eq('is_active', true)
               .single()
 
+            if (variantError) {
+              console.error('[Checkout] Variant fetch error:', variantError)
+            }
+
             if (variant) {
               finalPrice = variant.price
               variantName = variant.name
               variantId = variant.id
+              console.log('[Checkout] Variant found:', { variant, finalPrice })
+            } else {
+              console.warn('[Checkout] Variant not found or not active')
+              // Try to get default variant
+              const { data: defaultVariant } = await supabase
+                .from('product_variants')
+                .select('id, name, price')
+                .eq('product_id', product.id)
+                .eq('is_active', true)
+                .eq('is_default', true)
+                .single()
+
+              if (defaultVariant) {
+                finalPrice = defaultVariant.price
+                variantName = defaultVariant.name
+                variantId = defaultVariant.id
+                console.log('[Checkout] Using default variant:', defaultVariant)
+              }
+            }
+          } else {
+            // No variant specified - check if product has variants and use default
+            if (product.variants_enabled) {
+              console.log('[Checkout] No variant specified, checking for default variant')
+              const { data: defaultVariant } = await supabase
+                .from('product_variants')
+                .select('id, name, price')
+                .eq('product_id', product.id)
+                .eq('is_active', true)
+                .eq('is_default', true)
+                .single()
+
+              if (defaultVariant) {
+                finalPrice = defaultVariant.price
+                variantName = defaultVariant.name
+                variantId = defaultVariant.id
+                console.log('[Checkout] Using default variant:', defaultVariant)
+              } else {
+                // Get first active variant
+                const { data: firstVariant } = await supabase
+                  .from('product_variants')
+                  .select('id, name, price')
+                  .eq('product_id', product.id)
+                  .eq('is_active', true)
+                  .order('sort_order')
+                  .limit(1)
+                  .single()
+
+                if (firstVariant) {
+                  finalPrice = firstVariant.price
+                  variantName = firstVariant.name
+                  variantId = firstVariant.id
+                  console.log('[Checkout] Using first available variant:', firstVariant)
+                }
+              }
             }
           }
 
@@ -172,6 +235,7 @@ function CheckoutContent() {
             product_image: product.image_url || null,
             validated: true
           }
+          console.log('[Checkout] Final Purchase Context:', context)
           setPurchaseContext(context)
 
           // Set cart items from context
@@ -185,6 +249,7 @@ function CheckoutContent() {
           }])
         } else {
           // Product not found - show validation error
+          console.error('[Checkout] Product not found')
           setPurchaseContext(prev => ({ ...prev, validated: false }))
           toast.error('Product tidak ditemukan')
         }
