@@ -176,6 +176,26 @@ export async function deleteCategoryImage(imageUrl: string): Promise<boolean> {
   return true
 }
 
+export async function uploadQrisImage(file: File): Promise<string | null> {
+  const supabase = createBrowserClient()
+  const ext = file.name.split('.').pop()?.toLowerCase()
+  const fileName = `qris-${Date.now()}.${ext}`
+  const { error } = await supabase.storage.from('qris-images').upload(fileName, file, { cacheControl: '3600', upsert: false })
+  if (error) { console.error('QRIS upload error:', error); return null }
+  const { data: { publicUrl } } = supabase.storage.from('qris-images').getPublicUrl(fileName)
+  return publicUrl
+}
+
+export async function uploadPaymentProof(file: File, orderId: string): Promise<string | null> {
+  const supabase = createBrowserClient()
+  const ext = file.name.split('.').pop()?.toLowerCase()
+  const fileName = `proof-${orderId}-${Date.now()}.${ext}`
+  const { error } = await supabase.storage.from('payment-proofs').upload(fileName, file, { cacheControl: '3600', upsert: false })
+  if (error) { console.error('Proof upload error:', error); return null }
+  const { data: { publicUrl } } = supabase.storage.from('payment-proofs').getPublicUrl(fileName)
+  return publicUrl
+}
+
 export function validateCategoryImage(file: File): { valid: boolean; error?: string } {
   const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif']
   const maxSize = 2 * 1024 * 1024 // 2MB
