@@ -111,10 +111,12 @@ export function executeAction(action: Action, context?: Record<string, any>): vo
       break
     }
     case 'product_purchase': {
-      const { productId, variantId } = action.config
+      const { productId, variantId, productSlug } = action.config
       if (productId) {
+        // Use productSlug if available, otherwise use productId
+        const productRef = productSlug || productId
         // Navigate to checkout with variant
-        let checkoutUrl = `/checkout?product=${productId}`
+        let checkoutUrl = `/checkout?product=${productRef}&action=product_purchase`
         if (variantId) checkoutUrl += `&variant=${variantId}`
         window.location.href = checkoutUrl
       }
@@ -220,9 +222,10 @@ export function getActionUrl(actions: Action[], context?: Record<string, any>): 
     case 'direct_url':
       return navAction.config.url || null
     case 'product_purchase': {
-      const { productId, variantId } = navAction.config
-      if (productId) {
-        let url = `/checkout?product=${productId}`
+      const { productId, variantId, productSlug } = navAction.config
+      if (productId || productSlug) {
+        const productRef = productSlug || productId
+        let url = `/checkout?product=${productRef}&action=product_purchase`
         if (variantId) url += `&variant=${variantId}`
         return url
       }

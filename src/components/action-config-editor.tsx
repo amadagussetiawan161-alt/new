@@ -26,6 +26,11 @@ interface ActionConfigProps {
   openInNewTab: boolean
   productId: string | null
   variantId: string | null
+  productSlug?: string | null
+  productName?: string | null
+  variantName?: string | null
+  variantPrice?: number | null
+  productPrice?: number | null
   onActionTypeChange: (type: 'direct_url' | 'product_purchase') => void
   onUrlChange: (url: string) => void
   onOpenInNewTabChange: (open: boolean) => void
@@ -39,6 +44,11 @@ export function ActionConfigEditor({
   openInNewTab,
   productId,
   variantId,
+  productSlug,
+  productName,
+  variantName,
+  variantPrice,
+  productPrice,
   onActionTypeChange,
   onUrlChange,
   onOpenInNewTabChange,
@@ -49,6 +59,15 @@ export function ActionConfigEditor({
   const [products, setProducts] = useState<Product[]>([])
   const [variants, setVariants] = useState<Variant[]>([])
   const supabase = createBrowserClient()
+
+  // Format price for display
+  const formatPrice = (price: number) => {
+    return new Intl.NumberFormat('id-ID', {
+      style: 'currency',
+      currency: 'IDR',
+      maximumFractionDigits: 0
+    }).format(price)
+  }
 
   useEffect(() => {
     const fetchProducts = async () => {
@@ -168,7 +187,7 @@ export function ActionConfigEditor({
                 <option value="">Select Variant</option>
                 {variants.map((v) => (
                   <option key={v.id} value={v.id}>
-                    {v.name} - ${v.price}
+                    {v.name} - {formatPrice(v.price)}
                   </option>
                 ))}
               </select>
@@ -179,6 +198,26 @@ export function ActionConfigEditor({
             <p className="text-xs text-muted-foreground">
               This product has no variants. Default checkout will be used.
             </p>
+          )}
+
+          {/* Real-time Product Purchase Context Preview */}
+          {productId && productName && (
+            <div className="mt-2 p-2 bg-blue-50 rounded-lg border border-blue-100">
+              <p className="text-xs font-medium text-blue-700 mb-1">Product Purchase Context:</p>
+              <div className="space-y-0.5 text-xs text-blue-600">
+                <p>Product: <span className="font-medium">{productName}</span></p>
+                {variantId && variantName && (
+                  <p>Variant: <span className="font-medium">{variantName}</span></p>
+                )}
+                <p>Price: <span className="font-bold text-blue-800">
+                  {variantId && variantPrice
+                    ? formatPrice(variantPrice)
+                    : productPrice
+                    ? formatPrice(productPrice)
+                    : 'Not set'}
+                </span></p>
+              </div>
+            </div>
           )}
         </>
       )}
@@ -198,11 +237,12 @@ export function getActionUrl(
     return url || '#'
   }
 
-  if (actionType === 'product_purchase' && productId) {
-    const slug = productSlug || products?.find((p) => p.id === productId)?.slug
-    if (!slug) return '#'
+  if (actionType === 'product_purchase' && (productId || productSlug)) {
+    // Use slug if available, otherwise use productId
+    const productRef = productSlug || productId
+    if (!productRef) return '#'
 
-    let checkoutUrl = `/checkout?product=${slug}`
+    let checkoutUrl = `/checkout?product=${productRef}&action=product_purchase`
     if (variantId) {
       checkoutUrl += `&variant=${variantId}`
     }
@@ -210,4 +250,30 @@ export function getActionUrl(
   }
 
   return '#'
+}
+
+// Helper to get full action config for product purchase
+export function getProductPurchaseContext(
+  productId: string | null,
+  variantId: string | null,
+  productName?: string | null,
+  variantName?: string | null,
+  productPrice?: number | null,
+  variantPrice?: number | null
+): {
+  product_id: string | null
+  product_name: string | null
+  variant_id: string | null
+  variant_name: string | null
+  price: number
+  quantity: number
+} {
+  return {
+    product_id: productId,
+    product_name: productName || null,
+    variant_id: variantId,
+    variant_name: variantName || null,
+    price: variantId && variantPrice ? variantPrice : productPrice || 0,
+    quantity: 1
+  }
 }

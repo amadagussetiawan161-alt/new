@@ -27,6 +27,8 @@ interface CartItem {
   quantity: number
   price: number
   product: { id: string; name: string; slug: string }
+  variant_id?: string | null
+  variant_name?: string | null
 }
 
 interface PaymentAccount {
@@ -47,7 +49,9 @@ const formatIDR = (amount: number) =>
 function CheckoutContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const productSlug = searchParams.get('product')
+  const productIdOrSlug = searchParams.get('product')
+  const variantIdParam = searchParams.get('variant')
+  const fromAction = searchParams.get('action') === 'product_purchase'
 
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
@@ -59,6 +63,27 @@ function CheckoutContent() {
   const [couponApplied, setCouponApplied] = useState<any>(null)
   const [discount, setDiscount] = useState(0)
   const [form, setForm] = useState({ name: '', email: '', phone: '', notes: '' })
+
+  // Product Purchase Context
+  const [purchaseContext, setPurchaseContext] = useState<{
+    product_id: string | null
+    product_name: string | null
+    variant_id: string | null
+    variant_name: string | null
+    price: number
+    quantity: number
+    product_image: string | null
+    validated: boolean
+  }>({
+    product_id: null,
+    product_name: null,
+    variant_id: null,
+    variant_name: null,
+    price: 0,
+    quantity: 1,
+    product_image: null,
+    validated: false
+  })
 
   // Affiliate tracking state
   const [affiliateCode, setAffiliateCode] = useState<string | null>(null)
@@ -93,17 +118,96 @@ function CheckoutContent() {
       setPaymentAccounts(activeAccounts)
       if (activeAccounts.length > 0) setSelectedAccount(activeAccounts[0])
 
-      // Load cart
-      if (productSlug) {
-        const { data: product } = await supabase.from('products').select('id, name, slug, price').eq('slug', productSlug).single()
-        if (product) setCartItems([{ id: product.id, quantity: 1, price: product.price, product }])
+      // Load cart or product from Product Purchase Context
+      if (productIdOrSlug) {
+        // Try to find product by ID first, then by slug
+        let product = null
+        const { data: byId } = await supabase
+          .from('products')
+          .select('id, name, slug, price, image_url, variants_enabled')
+          .eq('id', productIdOrSlug)
+          .single()
+
+        if (byId) {
+          product = byId
+        } else {
+          const { data: bySlug } = await supabase
+            .from('products')
+            .select('id, name, slug, price, image_url, variants_enabled')
+            .eq('slug', productIdOrSlug)
+            .single()
+          product = bySlug
+        }
+
+        if (product) {
+          let finalPrice = product.price
+          let variantName = null
+          let variantId = null
+
+          // If variant specified, get variant price
+          if (variantIdParam) {
+            const { data: variant } = await supabase
+              .from('product_variants')
+              .select('id, name, price')
+              .eq('id', variantIdParam)
+              .eq('product_id', product.id)
+              .eq('is_active', true)
+              .single()
+
+            if (variant) {
+              finalPrice = variant.price
+              variantName = variant.name
+              variantId = variant.id
+            }
+          }
+
+          // Set Product Purchase Context
+          const context = {
+            product_id: product.id,
+            product_name: product.name,
+            variant_id: variantId,
+            variant_name: variantName,
+            price: finalPrice,
+            quantity: 1,
+            product_image: product.image_url || null,
+            validated: true
+          }
+          setPurchaseContext(context)
+
+          // Set cart items from context
+          setCartItems([{
+            id: product.id,
+            quantity: 1,
+            price: finalPrice,
+            product: { id: product.id, name: product.name, slug: product.slug },
+            variant_id: variantId,
+            variant_name: variantName
+          }])
+        } else {
+          // Product not found - show validation error
+          setPurchaseContext(prev => ({ ...prev, validated: false }))
+          toast.error('Product tidak ditemukan')
+        }
       } else {
-        const { data } = await supabase.from('cart_items').select('id, quantity, price, product:products(id, name, slug)').eq('user_id', user.id)
+        // Load from cart
+        const { data } = await supabase
+          .from('cart_items')
+          .select('id, quantity, price, variant_id, product:products(id, name, slug, image_url)')
+          .eq('user_id', user.id)
         const formatted: CartItem[] = (data as any[])?.map(row => ({
-          id: row.id, quantity: row.quantity, price: row.price,
+          id: row.id,
+          quantity: row.quantity,
+          price: row.price,
+          variant_id: row.variant_id,
+          variant_name: null,
           product: Array.isArray(row.product) ? row.product[0] : row.product
         })) || []
         setCartItems(formatted)
+
+        // Set validated true for cart items
+        if (formatted.length > 0) {
+          setPurchaseContext(prev => ({ ...prev, validated: true }))
+        }
       }
 
       // Handle affiliate tracking
@@ -138,7 +242,7 @@ function CheckoutContent() {
       setLoading(false)
     }
     fetchData()
-  }, [router, productSlug, supabase])
+  }, [router, productIdOrSlug, variantIdParam, supabase])
 
   const subtotal = cartItems.reduce((sum, item) => sum + (item.price * item.quantity), 0)
   const total = Math.max(0, subtotal - discount)
@@ -163,8 +267,22 @@ function CheckoutContent() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+
+    // Validate Product Purchase Context
+    if (!purchaseContext.validated) {
+      toast.error('Product Purchase belum terhubung dengan Product atau Variant yang valid.')
+      return
+    }
+
     if (cartItems.length === 0) { toast.error('Keranjang kosong'); return }
     if (!selectedAccount) { toast.error('Pilih metode pembayaran'); return }
+
+    // Validate price
+    if (total <= 0 && purchaseContext.price <= 0) {
+      toast.error('Harga tidak valid. Pastikan product dan variant sudah dipilih dengan benar.')
+      return
+    }
+
     setSubmitting(true)
 
     const orderNumber = `ORD-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`
@@ -190,12 +308,19 @@ function CheckoutContent() {
 
     if (error || !order) { toast.error('Gagal membuat order'); setSubmitting(false); return }
 
+    // Use Product Purchase Context for order items
     const orderItems = cartItems.map(item => ({
-      order_id: order.id, product_id: item.product.id, quantity: item.quantity, price: item.price
+      order_id: order.id,
+      product_id: item.product.id,
+      variant_id: item.variant_id || null,
+      quantity: item.quantity,
+      price: item.price,
+      product_name: item.product.name,
+      variant_name: item.variant_name || null
     }))
     await supabase.from('order_items').insert(orderItems)
 
-    if (!productSlug) await supabase.from('cart_items').delete().eq('user_id', userId)
+    if (!productIdOrSlug) await supabase.from('cart_items').delete().eq('user_id', userId)
     if (couponApplied) await supabase.from('coupons').update({ usage_count: (couponApplied.usage_count || 0) + 1 }).eq('id', couponApplied.id)
 
     // Link order to affiliate if referral code exists
@@ -456,14 +581,42 @@ function CheckoutContent() {
             {/* Order Summary */}
             <div>
               <Card className="sticky top-4">
-                <CardHeader><CardTitle className="text-base">Ringkasan Order</CardTitle></CardHeader>
+                <CardHeader>
+                  <CardTitle className="text-base">Ringkasan Order</CardTitle>
+                </CardHeader>
                 <CardContent className="space-y-4">
-                  {cartItems.map(item => (
-                    <div key={item.id} className="flex justify-between text-sm">
-                      <span className="text-slate-600">{item.product.name} ×{item.quantity}</span>
-                      <span className="font-medium">{formatIDR(item.price * item.quantity)}</span>
+                  {/* Product Purchase Context Validation */}
+                  {!purchaseContext.validated && productIdOrSlug && (
+                    <div className="bg-red-50 border border-red-100 rounded-lg p-3 flex items-start gap-2">
+                      <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 shrink-0" />
+                      <div>
+                        <p className="text-xs font-medium text-red-700">Product tidak valid</p>
+                        <p className="text-xs text-red-600 mt-0.5">Product Purchase belum terhubung dengan Product atau Variant yang valid.</p>
+                      </div>
                     </div>
-                  ))}
+                  )}
+
+                  {/* Cart Items from Product Purchase Context */}
+                  {cartItems.length > 0 ? cartItems.map(item => (
+                    <div key={item.id || item.product.id} className="space-y-1">
+                      <div className="flex justify-between text-sm">
+                        <div className="flex-1">
+                          <span className="text-slate-900 font-medium">{item.product.name}</span>
+                          {item.variant_name && (
+                            <div className="text-xs text-slate-500 mt-0.5">
+                              Variant: <span className="font-medium text-slate-700">{item.variant_name}</span>
+                            </div>
+                          )}
+                          <div className="text-xs text-slate-400">×{item.quantity}</div>
+                        </div>
+                        <span className="font-medium">{formatIDR(item.price * item.quantity)}</span>
+                      </div>
+                    </div>
+                  )) : (
+                    <div className="text-center py-4 text-slate-500">
+                      <p className="text-sm">Keranjang kosong</p>
+                    </div>
+                  )}
 
                   <div className="flex gap-2 pt-2">
                     <Input placeholder="Kode kupon" value={couponCode} onChange={e => setCouponCode(e.target.value)} disabled={!!couponApplied} className="text-sm" />
@@ -479,10 +632,21 @@ function CheckoutContent() {
                     <div className="flex justify-between text-lg font-bold"><span>Total</span><span>{formatIDR(total)}</span></div>
                   </div>
 
-                  <Button type="submit" className="w-full" size="lg" disabled={submitting || paymentAccounts.length === 0}>
+                  <Button
+                    type="submit"
+                    className="w-full"
+                    size="lg"
+                    disabled={submitting || paymentAccounts.length === 0 || cartItems.length === 0 || (productIdOrSlug && !purchaseContext.validated)}
+                  >
                     {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CreditCard className="mr-2 h-4 w-4" />}
                     Bayar Sekarang
                   </Button>
+
+                  {total <= 0 && cartItems.length > 0 && (
+                    <p className="text-xs text-center text-amber-600">
+                      Harga belum valid. Pastikan product dan variant sudah dipilih dengan benar.
+                    </p>
+                  )}
 
                   {selectedAccount && (
                     <p className="text-xs text-center text-slate-400">
