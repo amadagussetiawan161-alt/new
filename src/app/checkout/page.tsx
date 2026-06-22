@@ -19,14 +19,14 @@ import {
 import { toast } from 'sonner'
 import {
   Loader2, CreditCard, Tag, Building2, Smartphone, QrCode,
-  Upload, ZoomIn, X, CheckCircle2, Copy, AlertCircle
+  Upload, ZoomIn, X, CheckCircle2, Copy, AlertCircle, Package
 } from 'lucide-react'
 
 interface CartItem {
   id: string
   quantity: number
   price: number
-  product: { id: string; name: string; slug: string }
+  product: { id: string; name: string; slug: string; image_url?: string | null }
   variant_id?: string | null
   variant_name?: string | null
 }
@@ -179,7 +179,7 @@ function CheckoutContent() {
             id: product.id,
             quantity: 1,
             price: finalPrice,
-            product: { id: product.id, name: product.name, slug: product.slug },
+            product: { id: product.id, name: product.name, slug: product.slug, image_url: product.image_url },
             variant_id: variantId,
             variant_name: variantName
           }])
@@ -587,50 +587,141 @@ function CheckoutContent() {
                 <CardContent className="space-y-4">
                   {/* Product Purchase Context Validation */}
                   {!purchaseContext.validated && productIdOrSlug && (
-                    <div className="bg-red-50 border border-red-100 rounded-lg p-3 flex items-start gap-2">
-                      <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 shrink-0" />
-                      <div>
-                        <p className="text-xs font-medium text-red-700">Product tidak valid</p>
-                        <p className="text-xs text-red-600 mt-0.5">Product Purchase belum terhubung dengan Product atau Variant yang valid.</p>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Cart Items from Product Purchase Context */}
-                  {cartItems.length > 0 ? cartItems.map(item => (
-                    <div key={item.id || item.product.id} className="space-y-1">
-                      <div className="flex justify-between text-sm">
-                        <div className="flex-1">
-                          <span className="text-slate-900 font-medium">{item.product.name}</span>
-                          {item.variant_name && (
-                            <div className="text-xs text-slate-500 mt-0.5">
-                              Variant: <span className="font-medium text-slate-700">{item.variant_name}</span>
-                            </div>
-                          )}
-                          <div className="text-xs text-slate-400">×{item.quantity}</div>
+                    <div className="bg-red-50 border border-red-100 rounded-lg p-4">
+                      <div className="flex items-start gap-3">
+                        <AlertCircle className="h-5 w-5 text-red-500 mt-0.5 shrink-0" />
+                        <div>
+                          <p className="text-sm font-medium text-red-700">Produk Belum Dikonfigurasi</p>
+                          <p className="text-xs text-red-600 mt-1">
+                            Produk belum dikonfigurasi pada Product Purchase Action. Silakan hubungi admin.
+                          </p>
                         </div>
-                        <span className="font-medium">{formatIDR(item.price * item.quantity)}</span>
                       </div>
-                    </div>
-                  )) : (
-                    <div className="text-center py-4 text-slate-500">
-                      <p className="text-sm">Keranjang kosong</p>
                     </div>
                   )}
 
-                  <div className="flex gap-2 pt-2">
-                    <Input placeholder="Kode kupon" value={couponCode} onChange={e => setCouponCode(e.target.value)} disabled={!!couponApplied} className="text-sm" />
-                    <Button type="button" variant="outline" size="sm" onClick={applyCoupon} disabled={!!couponApplied}>
-                      <Tag className="h-4 w-4 mr-1" />Apply
-                    </Button>
-                  </div>
-                  {couponApplied && <p className="text-sm text-emerald-600">Kupon diterapkan: -{formatIDR(discount)}</p>}
+                  {/* Product from Product Purchase Context */}
+                  {purchaseContext.validated && cartItems.length > 0 ? (
+                    <div className="space-y-4">
+                      {cartItems.map(item => {
+                        const productImage = purchaseContext.product_image || item.product.image_url || null
+                        return (
+                          <div key={item.id || item.product.id} className="flex gap-4">
+                            {/* Product Thumbnail */}
+                            <div className="relative w-20 h-20 bg-slate-100 rounded-lg overflow-hidden shrink-0">
+                              {productImage ? (
+                                <img
+                                  src={productImage}
+                                  alt={item.product.name}
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center">
+                                  <Package className="h-8 w-8 text-slate-300" />
+                                </div>
+                              )}
+                            </div>
 
-                  <div className="border-t pt-4 space-y-2">
-                    <div className="flex justify-between text-sm"><span className="text-slate-500">Subtotal</span><span>{formatIDR(subtotal)}</span></div>
-                    {discount > 0 && <div className="flex justify-between text-sm text-emerald-600"><span>Diskon</span><span>-{formatIDR(discount)}</span></div>}
-                    <div className="flex justify-between text-lg font-bold"><span>Total</span><span>{formatIDR(total)}</span></div>
-                  </div>
+                            {/* Product Details */}
+                            <div className="flex-1 min-w-0">
+                              <h3 className="font-semibold text-slate-900 truncate">{item.product.name}</h3>
+                              {item.variant_name && (
+                                <div className="mt-1">
+                                  <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
+                                    {item.variant_name}
+                                  </span>
+                                </div>
+                              )}
+                              <div className="mt-2 flex items-baseline gap-2">
+                                <span className="text-lg font-bold text-slate-900">{formatIDR(item.price)}</span>
+                                <span className="text-xs text-slate-400">×{item.quantity}</span>
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })}
+
+                      {/* Price Breakdown */}
+                      <div className="border-t pt-4 space-y-3">
+                        <div className="flex justify-between text-sm">
+                          <span className="text-slate-500">Harga</span>
+                          <span>{formatIDR(subtotal)}</span>
+                        </div>
+
+                        <div className="flex gap-2">
+                          <Input
+                            placeholder="Kode kupon"
+                            value={couponCode}
+                            onChange={e => setCouponCode(e.target.value)}
+                            disabled={!!couponApplied}
+                            className="text-sm flex-1"
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={applyCoupon}
+                            disabled={!!couponApplied}
+                          >
+                            <Tag className="h-4 w-4 mr-1" />Apply
+                          </Button>
+                        </div>
+
+                        {couponApplied && (
+                          <div className="flex justify-between text-sm text-emerald-600">
+                            <span>Diskon</span>
+                            <span>-{formatIDR(discount)}</span>
+                          </div>
+                        )}
+
+                        <div className="border-t pt-3">
+                          <div className="flex justify-between">
+                            <span className="font-semibold text-slate-700">Total</span>
+                            <span className="text-xl font-bold text-slate-900">{formatIDR(total)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : !productIdOrSlug && cartItems.length > 0 ? (
+                    // Cart flow - multiple items
+                    <div className="space-y-3">
+                      {cartItems.map(item => (
+                        <div key={item.id} className="flex justify-between text-sm">
+                          <div className="flex-1">
+                            <span className="text-slate-900 font-medium">{item.product.name}</span>
+                            <div className="text-xs text-slate-400">×{item.quantity}</div>
+                          </div>
+                          <span className="font-medium">{formatIDR(item.price * item.quantity)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    !purchaseContext.validated && (
+                      <div className="text-center py-8 text-slate-400">
+                        <Package className="h-12 w-12 mx-auto mb-3 text-slate-200" />
+                        <p className="text-sm">Tidak ada produk yang dipilih</p>
+                      </div>
+                    )
+                  )}
+
+                  {/* Coupon for cart flow */}
+                  {!productIdOrSlug && cartItems.length > 0 && (
+                    <>
+                      <div className="flex gap-2 pt-2">
+                        <Input placeholder="Kode kupon" value={couponCode} onChange={e => setCouponCode(e.target.value)} disabled={!!couponApplied} className="text-sm" />
+                        <Button type="button" variant="outline" size="sm" onClick={applyCoupon} disabled={!!couponApplied}>
+                          <Tag className="h-4 w-4 mr-1" />Apply
+                        </Button>
+                      </div>
+                      {couponApplied && <p className="text-sm text-emerald-600">Kupon diterapkan: -{formatIDR(discount)}</p>}
+
+                      <div className="border-t pt-4 space-y-2">
+                        <div className="flex justify-between text-sm"><span className="text-slate-500">Subtotal</span><span>{formatIDR(subtotal)}</span></div>
+                        {discount > 0 && <div className="flex justify-between text-sm text-emerald-600"><span>Diskon</span><span>-{formatIDR(discount)}</span></div>}
+                        <div className="flex justify-between text-lg font-bold"><span>Total</span><span>{formatIDR(total)}</span></div>
+                      </div>
+                    </>
+                  )}
 
                   <Button
                     type="submit"
@@ -642,7 +733,7 @@ function CheckoutContent() {
                     Bayar Sekarang
                   </Button>
 
-                  {total <= 0 && cartItems.length > 0 && (
+                  {total <= 0 && cartItems.length > 0 && purchaseContext.validated && (
                     <p className="text-xs text-center text-amber-600">
                       Harga belum valid. Pastikan product dan variant sudah dipilih dengan benar.
                     </p>
