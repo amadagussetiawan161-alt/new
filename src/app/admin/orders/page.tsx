@@ -5,8 +5,9 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { createBrowserClient } from '@/lib/supabase/client'
-import { Loader2, Check, X, Trash2, AlertTriangle, Eye, ZoomIn, CheckCircle, XCircle } from 'lucide-react'
+import { Loader2, Check, X, Trash2, AlertTriangle, Eye, CheckCircle, XCircle, Activity } from 'lucide-react'
 import { toast } from 'sonner'
+import { runOrderActions } from '@/lib/order-action-engine'
 
 interface Order {
   id: string
@@ -64,9 +65,32 @@ export default function AdminOrdersPage() {
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
   const [detailOrder, setDetailOrder] = useState<Order | null>(null)
+
+  const openDetail = async (order: Order) => {
+    setDetailOrder(order)
+    setDetailTab('info')
+    setLogsLoading(true)
+    const { data } = await supabase
+      .from('action_executions')
+      .select('id, execution_code, action_name, action_type, status, started_at, completed_at, duration_ms, retry_count, error_message, output_data')
+      .eq('order_id', order.id)
+      .order('started_at', { ascending: true })
+    setExecutions(data || [])
+    setLogsLoading(false)
+  }
+
+  const retryAction = async (exec: any) => {
+    if (!detailOrder) return
+    await supabase.from('action_executions').update({ status: 'pending', error_message: null }).eq('id', exec.id)
+    toast.success('Action dijadwalkan ulang')
+    openDetail(detailOrder)
+  }
   const [rejectReason, setRejectReason] = useState('')
   const [showRejectForm, setShowRejectForm] = useState(false)
   const [zoomProof, setZoomProof] = useState<string | null>(null)
+  const [detailTab, setDetailTab] = useState<'info' | 'logs'>('info')
+  const [executions, setExecutions] = useState<any[]>([])
+  const [logsLoading, setLogsLoading] = useState(false)
   const supabase = createBrowserClient()
 
   useEffect(() => { fetchOrders() }, [filterPayment, filterOrder])
@@ -106,22 +130,9 @@ export default function AdminOrdersPage() {
     setLoading(false)
   }
 
-  const generateLicenseKey = (pattern: string, orderId?: string, userId?: string): string => {
-    const random = () => Math.random().toString(36).substr(2, 8).toUpperCase()
-    const now = new Date()
-    return pattern
-      .replace(/{RANDOM}/g, random())
-      .replace(/{YYYY}/g, String(now.getFullYear()))
-      .replace(/{MM}/g, String(now.getMonth() + 1).padStart(2, '0'))
-      .replace(/{DD}/g, String(now.getDate()).padStart(2, '0'))
-      .replace(/{ORDER_ID}/g, (orderId || '').slice(0, 8).toUpperCase())
-      .replace(/{USER_ID}/g, (userId || '').slice(0, 8).toUpperCase())
-  }
-
   const approvePayment = async (orderId: string) => {
     setActionLoading(orderId + 'approve')
 
-    // Update order statuses
     const { error } = await supabase.from('orders').update({
       payment_status: 'paid',
       order_status: 'processing',
@@ -131,73 +142,15 @@ export default function AdminOrdersPage() {
 
     if (error) { toast.error('Gagal approve'); setActionLoading(null); return }
 
-    // Fetch order details for license/download generation
-    const { data: order } = await supabase
-      .from('orders')
-      .select('id, user_id, order_items(product_id, product:products(id, name, license_enabled, download_type, download_url, license_duration, custom_license_days))')
-      .eq('id', orderId)
-      .single()
-
-    if (order) {
-      // Fetch default active license template
-      const { data: templates } = await supabase.from('license_templates').select('*').eq('is_active', true).limit(1)
-      const template = templates?.[0]
-
-      for (const item of (order.order_items as any[]) || []) {
-        const product = Array.isArray(item.product) ? item.product[0] : item.product
-        if (!product) continue
-
-        // Auto-generate license if product has license_enabled
-        if (product.license_enabled) {
-          // Check if license already exists for this order+product
-          const { data: existing } = await supabase.from('licenses')
-            .select('id').eq('order_id', orderId).eq('product_id', product.id).limit(1)
-          if (!existing || existing.length === 0) {
-            const pattern = template?.pattern || 'LICENSE-{RANDOM}'
-            const licKey = generateLicenseKey(pattern, orderId, order.user_id)
-            let expiresAt: string | null = null
-            if (template?.validity_days) {
-              const d = new Date()
-              d.setDate(d.getDate() + template.validity_days)
-              expiresAt = d.toISOString()
-            } else if (product.license_duration === 'days' && product.custom_license_days) {
-              const d = new Date()
-              d.setDate(d.getDate() + product.custom_license_days)
-              expiresAt = d.toISOString()
-            } else if (product.license_duration === '1_year') {
-              const d = new Date()
-              d.setFullYear(d.getFullYear() + 1)
-              expiresAt = d.toISOString()
-            }
-            await supabase.from('licenses').insert({
-              user_id: order.user_id,
-              product_id: product.id,
-              order_id: orderId,
-              template_id: template?.id || null,
-              license_key: licKey,
-              status: 'active',
-              activated_at: new Date().toISOString(),
-              expires_at: expiresAt,
-              purchase_date: new Date().toISOString(),
-            })
-          }
-        }
-
-        // Auto-add to user_downloads if product has download_type
-        if (product.download_type) {
-          await supabase.from('user_downloads').upsert({
-            user_id: order.user_id,
-            product_id: product.id,
-            order_id: orderId,
-            download_count: 0,
-            is_disabled: false,
-            created_at: new Date().toISOString(),
-          }, { onConflict: 'user_id,product_id' })
-        }
-      }
+    // Run the full action engine (license, download, notification, custom actions, etc.)
+    const { executions } = await runOrderActions(supabase, orderId)
+    const failed = executions.filter(e => e.status === 'failed')
+    if (failed.length > 0) {
+      toast.warning(`Pembayaran dikonfirmasi. ${failed.length} action gagal: ${failed.map(e => e.name).join(', ')}`)
+    } else {
+      toast.success(`Pembayaran dikonfirmasi — ${executions.length} action berhasil dijalankan`)
     }
 
-    toast.success('Pembayaran dikonfirmasi — lisensi & akses download diterbitkan')
     fetchOrders()
     setDetailOrder(null)
     setActionLoading(null)
@@ -353,8 +306,8 @@ export default function AdminOrdersPage() {
                                 <Trash2 className="h-3 w-3" />
                               </Button>
                               <Button size="sm" variant="ghost" className="h-7 px-2 text-xs text-slate-500"
-                                onClick={() => setDetailOrder(order)}>
-                                Detail
+                                onClick={() => openDetail(order)}>
+                                <Activity className="h-3 w-3 mr-1" />Detail
                               </Button>
                             </div>
                           )}
@@ -372,48 +325,139 @@ export default function AdminOrdersPage() {
       {/* Order Detail Modal */}
       {detailOrder && !showRejectForm && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6 space-y-4 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold">Detail Order</h3>
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between p-6 pb-4 border-b shrink-0">
+              <div>
+                <h3 className="text-lg font-semibold">Detail Order</h3>
+                <p className="text-sm font-mono text-slate-500">{detailOrder.order_number}</p>
+              </div>
               <button onClick={() => setDetailOrder(null)}><X className="h-5 w-5 text-slate-400" /></button>
             </div>
-            <div className="space-y-3 text-sm">
-              <div className="flex justify-between"><span className="text-slate-500">Order Number</span><span className="font-mono font-medium">{detailOrder.order_number}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Customer</span><span>{detailOrder.user?.email || '-'}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Total</span><span className="font-bold">{formatIDR(Number(detailOrder.total_amount))}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Payment Status</span>{paymentStatusBadge(detailOrder.payment_status)}</div>
-              <div className="flex justify-between"><span className="text-slate-500">Order Status</span>{orderStatusBadge(detailOrder.order_status || detailOrder.status)}</div>
-              {detailOrder.payment_account && (
-                <>
-                  <div className="flex justify-between"><span className="text-slate-500">Metode Bayar</span><span>{detailOrder.payment_account.payment_name}</span></div>
-                  {detailOrder.payment_account.bank_name && <div className="flex justify-between"><span className="text-slate-500">Bank/E-Wallet</span><span>{detailOrder.payment_account.bank_name}</span></div>}
-                  {detailOrder.payment_account.account_number && <div className="flex justify-between"><span className="text-slate-500">No Rekening</span><span className="font-mono">{detailOrder.payment_account.account_number}</span></div>}
-                  {detailOrder.payment_account.account_holder && <div className="flex justify-between"><span className="text-slate-500">Atas Nama</span><span>{detailOrder.payment_account.account_holder}</span></div>}
-                </>
-              )}
-              {detailOrder.rejection_reason && (
-                <div className="bg-red-50 border border-red-100 rounded-lg p-3">
-                  <p className="text-xs text-red-600 font-medium">Alasan Penolakan:</p>
-                  <p className="text-sm text-red-700 mt-1">{detailOrder.rejection_reason}</p>
-                </div>
-              )}
-              {detailOrder.payment_proof && (
-                <div>
-                  <p className="text-slate-500 mb-2">Bukti Pembayaran:</p>
-                  <img src={detailOrder.payment_proof} alt="Bukti" className="rounded-lg border max-h-48 cursor-pointer" onClick={() => setZoomProof(detailOrder.payment_proof)} />
-                </div>
-              )}
-              <div>
-                <p className="text-slate-500 mb-1">Items:</p>
-                <ul className="space-y-1">{detailOrder.order_items.map((item, i) => <li key={i} className="text-slate-700">- {item.product?.name || '-'}</li>)}</ul>
-              </div>
+
+            {/* Tabs */}
+            <div className="flex gap-1 px-6 pt-3 border-b shrink-0">
+              <button onClick={() => setDetailTab('info')}
+                className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${detailTab === 'info' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-900'}`}>
+                Informasi
+              </button>
+              <button onClick={() => setDetailTab('logs')}
+                className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px flex items-center gap-1.5 ${detailTab === 'logs' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-900'}`}>
+                <Activity className="h-3.5 w-3.5" />Action Logs
+                {executions.length > 0 && <span className="ml-1 bg-slate-100 text-slate-600 text-xs rounded-full px-1.5 py-0.5">{executions.length}</span>}
+              </button>
             </div>
-            <div className="flex gap-2 pt-2">
+
+            {/* Body */}
+            <div className="overflow-y-auto flex-1 p-6">
+              {detailTab === 'info' && (
+                <div className="space-y-3 text-sm">
+                  <div className="flex justify-between"><span className="text-slate-500">Customer</span><span>{detailOrder.user?.email || '-'}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Total</span><span className="font-bold">{formatIDR(Number(detailOrder.total_amount))}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Payment Status</span>{paymentStatusBadge(detailOrder.payment_status)}</div>
+                  <div className="flex justify-between"><span className="text-slate-500">Order Status</span>{orderStatusBadge(detailOrder.order_status || detailOrder.status)}</div>
+                  {detailOrder.payment_account && (
+                    <>
+                      <div className="flex justify-between"><span className="text-slate-500">Metode Bayar</span><span>{detailOrder.payment_account.payment_name}</span></div>
+                      {detailOrder.payment_account.bank_name && <div className="flex justify-between"><span className="text-slate-500">Bank/E-Wallet</span><span>{detailOrder.payment_account.bank_name}</span></div>}
+                      {detailOrder.payment_account.account_number && <div className="flex justify-between"><span className="text-slate-500">No Rekening</span><span className="font-mono">{detailOrder.payment_account.account_number}</span></div>}
+                      {detailOrder.payment_account.account_holder && <div className="flex justify-between"><span className="text-slate-500">Atas Nama</span><span>{detailOrder.payment_account.account_holder}</span></div>}
+                    </>
+                  )}
+                  {detailOrder.rejection_reason && (
+                    <div className="bg-red-50 border border-red-100 rounded-lg p-3">
+                      <p className="text-xs text-red-600 font-medium">Alasan Penolakan:</p>
+                      <p className="text-sm text-red-700 mt-1">{detailOrder.rejection_reason}</p>
+                    </div>
+                  )}
+                  {detailOrder.payment_proof && (
+                    <div>
+                      <p className="text-slate-500 mb-2">Bukti Pembayaran:</p>
+                      <img src={detailOrder.payment_proof} alt="Bukti" className="rounded-lg border max-h-48 cursor-pointer" onClick={() => setZoomProof(detailOrder.payment_proof)} />
+                    </div>
+                  )}
+                  <div>
+                    <p className="text-slate-500 mb-1">Items:</p>
+                    <ul className="space-y-1">{detailOrder.order_items.map((item, i) => <li key={i} className="text-slate-700">— {item.product?.name || '-'}</li>)}</ul>
+                  </div>
+                </div>
+              )}
+
+              {detailTab === 'logs' && (
+                <div>
+                  {logsLoading ? (
+                    <div className="flex justify-center py-8"><Loader2 className="h-6 w-6 animate-spin text-slate-400" /></div>
+                  ) : executions.length === 0 ? (
+                    <div className="text-center py-8 text-slate-400">
+                      <Activity className="h-8 w-8 mx-auto mb-2 opacity-30" />
+                      <p className="text-sm">Belum ada action log untuk order ini.</p>
+                      <p className="text-xs mt-1">Log akan muncul setelah pembayaran dikonfirmasi.</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {executions.map((exec, i) => (
+                        <div key={exec.id} className={`border rounded-xl p-4 ${exec.status === 'success' ? 'border-emerald-100 bg-emerald-50/40' : exec.status === 'failed' ? 'border-red-100 bg-red-50/40' : exec.status === 'running' ? 'border-blue-100 bg-blue-50/40' : 'border-slate-100'}`}>
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex items-center gap-2.5">
+                              <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${exec.status === 'success' ? 'bg-emerald-100 text-emerald-700' : exec.status === 'failed' ? 'bg-red-100 text-red-700' : exec.status === 'running' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'}`}>
+                                {exec.status === 'success' ? '✓' : exec.status === 'failed' ? '✕' : exec.status === 'running' ? '…' : String(i + 1)}
+                              </div>
+                              <div>
+                                <p className="font-medium text-slate-900 text-sm">{exec.action_name}</p>
+                                <p className="text-xs text-slate-500 font-mono">{exec.action_type} · {exec.execution_code}</p>
+                              </div>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${exec.status === 'success' ? 'bg-emerald-100 text-emerald-700' : exec.status === 'failed' ? 'bg-red-100 text-red-700' : exec.status === 'running' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'}`}>
+                                {exec.status}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="mt-3 grid grid-cols-3 gap-3 text-xs text-slate-500">
+                            {exec.started_at && <div><span className="block text-slate-400 mb-0.5">Started</span>{new Date(exec.started_at).toLocaleTimeString('id-ID')}</div>}
+                            {exec.completed_at && <div><span className="block text-slate-400 mb-0.5">Completed</span>{new Date(exec.completed_at).toLocaleTimeString('id-ID')}</div>}
+                            {exec.duration_ms != null && <div><span className="block text-slate-400 mb-0.5">Duration</span>{exec.duration_ms < 1000 ? `${exec.duration_ms}ms` : `${(exec.duration_ms / 1000).toFixed(1)}s`}</div>}
+                          </div>
+
+                          {exec.retry_count > 0 && (
+                            <p className="text-xs text-amber-600 mt-2">Retried {exec.retry_count}×</p>
+                          )}
+
+                          {exec.error_message && (
+                            <div className="mt-2 bg-red-50 border border-red-100 rounded-lg p-2.5">
+                              <p className="text-xs font-medium text-red-600 mb-0.5">Error</p>
+                              <p className="text-xs text-red-700 font-mono">{exec.error_message}</p>
+                            </div>
+                          )}
+
+                          {exec.output_data && !exec.output_data.skipped && (
+                            <details className="mt-2">
+                              <summary className="text-xs text-slate-500 cursor-pointer hover:text-slate-700">Output data</summary>
+                              <pre className="mt-1 text-xs bg-slate-50 rounded p-2 overflow-x-auto text-slate-600">{JSON.stringify(exec.output_data, null, 2)}</pre>
+                            </details>
+                          )}
+
+                          {exec.status === 'failed' && (
+                            <Button size="sm" variant="outline" className="mt-2 h-7 text-xs" onClick={() => retryAction(exec)}>
+                              Retry
+                            </Button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="flex gap-2 p-6 pt-4 border-t shrink-0">
               {detailOrder.payment_status === 'pending_verification' && (
                 <>
                   <Button className="flex-1 bg-emerald-600 hover:bg-emerald-700" onClick={() => approvePayment(detailOrder.id)} disabled={!!actionLoading}>
                     {actionLoading === detailOrder.id + 'approve' ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <CheckCircle className="h-4 w-4 mr-2" />}
-                    Approve Pembayaran
+                    Approve
                   </Button>
                   <Button variant="outline" className="flex-1 border-red-200 text-red-600 hover:bg-red-50" onClick={() => setShowRejectForm(true)}>
                     <XCircle className="h-4 w-4 mr-2" />Reject
