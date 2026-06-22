@@ -8,8 +8,8 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
   Loader2, LayoutDashboard, Package, Receipt, Download, Key,
-  Gift, Bell, Settings, LogOut, Menu, X, FileText, User,
-  Sparkles, ChevronDown, Search, HelpCircle
+  Gift, Bell, Settings, LogOut, Menu, X, User,
+  Sparkles, Search, HelpCircle
 } from 'lucide-react'
 
 const menuItems = [
@@ -18,7 +18,6 @@ const menuItems = [
   { icon: Receipt, label: 'Orders', href: '/dashboard/orders' },
   { icon: Download, label: 'Downloads', href: '/dashboard/downloads' },
   { icon: Key, label: 'Licenses', href: '/dashboard/licenses' },
-  { icon: FileText, label: 'Invoices', href: '/dashboard/invoices' },
   { icon: Gift, label: 'Affiliate', href: '/dashboard/referrals' },
   { icon: Bell, label: 'Notifications', href: '/dashboard/notifications' },
   { icon: User, label: 'Profile', href: '/dashboard/profile' },

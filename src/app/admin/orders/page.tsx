@@ -106,16 +106,100 @@ export default function AdminOrdersPage() {
     setLoading(false)
   }
 
+  const generateLicenseKey = (pattern: string, orderId?: string, userId?: string): string => {
+    const random = () => Math.random().toString(36).substr(2, 8).toUpperCase()
+    const now = new Date()
+    return pattern
+      .replace(/{RANDOM}/g, random())
+      .replace(/{YYYY}/g, String(now.getFullYear()))
+      .replace(/{MM}/g, String(now.getMonth() + 1).padStart(2, '0'))
+      .replace(/{DD}/g, String(now.getDate()).padStart(2, '0'))
+      .replace(/{ORDER_ID}/g, (orderId || '').slice(0, 8).toUpperCase())
+      .replace(/{USER_ID}/g, (userId || '').slice(0, 8).toUpperCase())
+  }
+
   const approvePayment = async (orderId: string) => {
     setActionLoading(orderId + 'approve')
+
+    // Update order statuses
     const { error } = await supabase.from('orders').update({
       payment_status: 'paid',
       order_status: 'processing',
       status: 'processing',
       rejection_reason: null,
     }).eq('id', orderId)
-    if (error) toast.error('Gagal approve')
-    else { toast.success('Pembayaran dikonfirmasi'); fetchOrders(); setDetailOrder(null) }
+
+    if (error) { toast.error('Gagal approve'); setActionLoading(null); return }
+
+    // Fetch order details for license/download generation
+    const { data: order } = await supabase
+      .from('orders')
+      .select('id, user_id, order_items(product_id, product:products(id, name, license_enabled, download_type, download_url, license_duration, custom_license_days))')
+      .eq('id', orderId)
+      .single()
+
+    if (order) {
+      // Fetch default active license template
+      const { data: templates } = await supabase.from('license_templates').select('*').eq('is_active', true).limit(1)
+      const template = templates?.[0]
+
+      for (const item of (order.order_items as any[]) || []) {
+        const product = Array.isArray(item.product) ? item.product[0] : item.product
+        if (!product) continue
+
+        // Auto-generate license if product has license_enabled
+        if (product.license_enabled) {
+          // Check if license already exists for this order+product
+          const { data: existing } = await supabase.from('licenses')
+            .select('id').eq('order_id', orderId).eq('product_id', product.id).limit(1)
+          if (!existing || existing.length === 0) {
+            const pattern = template?.pattern || 'LICENSE-{RANDOM}'
+            const licKey = generateLicenseKey(pattern, orderId, order.user_id)
+            let expiresAt: string | null = null
+            if (template?.validity_days) {
+              const d = new Date()
+              d.setDate(d.getDate() + template.validity_days)
+              expiresAt = d.toISOString()
+            } else if (product.license_duration === 'days' && product.custom_license_days) {
+              const d = new Date()
+              d.setDate(d.getDate() + product.custom_license_days)
+              expiresAt = d.toISOString()
+            } else if (product.license_duration === '1_year') {
+              const d = new Date()
+              d.setFullYear(d.getFullYear() + 1)
+              expiresAt = d.toISOString()
+            }
+            await supabase.from('licenses').insert({
+              user_id: order.user_id,
+              product_id: product.id,
+              order_id: orderId,
+              template_id: template?.id || null,
+              license_key: licKey,
+              status: 'active',
+              activated_at: new Date().toISOString(),
+              expires_at: expiresAt,
+              purchase_date: new Date().toISOString(),
+            })
+          }
+        }
+
+        // Auto-add to user_downloads if product has download_type
+        if (product.download_type) {
+          await supabase.from('user_downloads').upsert({
+            user_id: order.user_id,
+            product_id: product.id,
+            order_id: orderId,
+            download_count: 0,
+            is_disabled: false,
+            created_at: new Date().toISOString(),
+          }, { onConflict: 'user_id,product_id' })
+        }
+      }
+    }
+
+    toast.success('Pembayaran dikonfirmasi — lisensi & akses download diterbitkan')
+    fetchOrders()
+    setDetailOrder(null)
     setActionLoading(null)
   }
 

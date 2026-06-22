@@ -10,7 +10,7 @@ import { Badge } from '@/components/ui/badge'
 import {
   Loader2, LayoutDashboard, Users, Package, FolderOpen, ShoppingCart,
   CreditCard, Key, Users2, Settings, LogOut, Menu, X, FileText,
-  Search, Bell, ChevronDown, Calendar, BarChart3, Sparkles
+  Search, Bell, ChevronDown, Calendar, BarChart3, Sparkles, Download
 } from 'lucide-react'
 
 const FOCUS_MODE_PATHS = ['/admin/products/new']
@@ -32,6 +32,7 @@ const menuItems = [
   { icon: ShoppingCart, label: 'Orders', href: '/admin/orders' },
   { icon: CreditCard, label: 'Payments', href: '/admin/payments' },
   { icon: Key, label: 'Licenses', href: '/admin/licenses' },
+  { icon: Download, label: 'Downloads', href: '/admin/downloads' },
   { icon: Users2, label: 'Affiliates', href: '/admin/affiliates' },
   { icon: FileText, label: 'Blog', href: '/admin/blog' },
   { icon: BarChart3, label: 'Reports', href: '/admin/reports' },
