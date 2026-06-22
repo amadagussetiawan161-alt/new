@@ -1,12 +1,13 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
+import { createBrowserClient } from '@/lib/supabase/client'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { createBrowserClient } from '@/lib/supabase/client'
-import { Loader2, X, User, DollarSign, RefreshCw, Package, Clock, CheckCircle } from 'lucide-react'
+import { Loader as Loader2, Package, User, DollarSign, RefreshCw, CircleCheck as CheckCircle, Circle as XCircle, Clock, CircleAlert as AlertCircle } from 'lucide-react'
 import { toast } from 'sonner'
+import { formatIDR } from '@/lib/purchase-context'
 
 interface Order {
   id: string
@@ -78,6 +79,8 @@ export default function AdminOrdersPage() {
       `)
       .order('created_at', { ascending: false })
 
+    // Note: No payment_status filter for 'all' - show ALL orders regardless of status
+
     if (filter !== 'all') query = query.eq('status', filter)
     if (paymentFilter !== 'all') query = query.eq('payment_status', paymentFilter)
 
@@ -112,7 +115,6 @@ export default function AdminOrdersPage() {
     setRefreshing(false)
   }, [filter, paymentFilter, supabase])
 
-  // Initial fetch
   useEffect(() => {
     fetchOrders()
   }, [fetchOrders])
@@ -120,7 +122,7 @@ export default function AdminOrdersPage() {
   // Real-time subscription
   useEffect(() => {
     const channel = supabase
-      .channel('orders-realtime')
+      .channel('admin-orders-realtime')
       .on(
         'postgres_changes',
         {
@@ -128,10 +130,7 @@ export default function AdminOrdersPage() {
           schema: 'public',
           table: 'orders'
         },
-        (payload) => {
-          console.log('[Realtime] Order change detected:', payload.eventType)
-          fetchOrders()
-        }
+        () => fetchOrders()
       )
       .subscribe()
 
@@ -140,49 +139,85 @@ export default function AdminOrdersPage() {
     }
   }, [fetchOrders, supabase])
 
-  const formatIDR = (amount: number) =>
-    new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(amount)
-
   const updateStatus = async (orderId: string, newStatus: string) => {
-    const { error } = await supabase.from('orders').update({ status: newStatus }).eq('id', orderId)
+    const { error } = await supabase
+      .from('orders')
+      .update({ status: newStatus })
+      .eq('id', orderId)
     if (error) toast.error('Failed to update status')
-    else { toast.success('Status updated'); fetchOrders() }
+    else {
+      toast.success('Status updated')
+      fetchOrders()
+    }
   }
 
-  const updatePaymentStatus = async (orderId: string, newStatus: string) => {
-    const updateData: Record<string, any> = { payment_status: newStatus }
-    if (newStatus === 'paid') {
+  const updatePaymentStatus = async (orderId: string, newPaymentStatus: string) => {
+    const updateData: Record<string, any> = { payment_status: newPaymentStatus }
+    if (newPaymentStatus === 'paid') {
       updateData.status = 'paid'
     }
-    const { error } = await supabase.from('orders').update(updateData).eq('id', orderId)
-    if (error) toast.error('Failed to update payment status')
-    else { toast.success('Payment status updated'); fetchOrders() }
+
+    const { error } = await supabase
+      .from('orders')
+      .update(updateData)
+      .eq('id', orderId)
+
+    if (error) {
+      toast.error('Failed to update payment status')
+    } else {
+      toast.success('Payment status updated')
+      fetchOrders()
+
+      // If approved, trigger post-payment processing
+      if (newPaymentStatus === 'paid') {
+        // Process commission, license, download
+        const { processOrderOnPaymentPaid } = await import('@/lib/purchase-context')
+        await processOrderOnPaymentPaid(supabase, orderId)
+      }
+    }
   }
 
   const getStatusColor = (status: string) => {
     switch (status) {
-      case 'paid': case 'completed': return 'bg-emerald-100 text-emerald-700'
-      case 'pending': return 'bg-amber-100 text-amber-700'
-      case 'processing': return 'bg-blue-100 text-blue-700'
-      case 'cancelled': return 'bg-red-100 text-red-700'
-      default: return 'bg-slate-100 text-slate-700'
+      case 'paid':
+      case 'completed':
+        return 'bg-emerald-100 text-emerald-700'
+      case 'pending':
+        return 'bg-amber-100 text-amber-700'
+      case 'processing':
+        return 'bg-blue-100 text-blue-700'
+      case 'cancelled':
+        return 'bg-red-100 text-red-700'
+      default:
+        return 'bg-slate-100 text-slate-700'
     }
   }
 
   const getPaymentStatusColor = (status: string) => {
     switch (status) {
-      case 'paid': return 'bg-emerald-100 text-emerald-700'
-      case 'pending_payment': return 'bg-amber-100 text-amber-700'
-      case 'pending_verification': return 'bg-blue-100 text-blue-700'
-      case 'rejected': return 'bg-red-100 text-red-700'
-      default: return 'bg-slate-100 text-slate-700'
+      case 'paid':
+        return 'bg-emerald-100 text-emerald-700'
+      case 'pending_payment':
+        return 'bg-amber-100 text-amber-700'
+      case 'pending_verification':
+        return 'bg-blue-100 text-blue-700'
+      case 'rejected':
+        return 'bg-red-100 text-red-700'
+      default:
+        return 'bg-slate-100 text-slate-700'
     }
   }
 
   const statusOptions = ['pending', 'paid', 'processing', 'completed', 'cancelled']
   const paymentStatusOptions = ['all', 'pending_payment', 'pending_verification', 'paid', 'rejected']
 
-  if (loading) return <div className="flex justify-center py-12"><Loader2 className="h-8 w-8 animate-spin" /></div>
+  if (loading) {
+    return (
+      <div className="flex justify-center py-12">
+        <Loader2 className="h-8 w-8 animate-spin" />
+      </div>
+    )
+  }
 
   return (
     <div>
@@ -203,13 +238,12 @@ export default function AdminOrdersPage() {
           </Button>
         </div>
 
-        {/* Filters */}
         <div className="flex flex-wrap gap-4">
           <div>
             <p className="text-xs text-muted-foreground mb-1">Status:</p>
             <div className="flex gap-1 flex-wrap">
               <Button variant={filter === 'all' ? 'default' : 'outline'} size="sm" onClick={() => setFilter('all')}>All</Button>
-              {statusOptions.map((s) => (
+              {statusOptions.map(s => (
                 <Button key={s} variant={filter === s ? 'default' : 'outline'} size="sm" onClick={() => setFilter(s)}>
                   {s.charAt(0).toUpperCase() + s.slice(1)}
                 </Button>
@@ -219,7 +253,7 @@ export default function AdminOrdersPage() {
           <div>
             <p className="text-xs text-muted-foreground mb-1">Payment:</p>
             <div className="flex gap-1 flex-wrap">
-              {paymentStatusOptions.map((s) => (
+              {paymentStatusOptions.map(s => (
                 <Button
                   key={s}
                   variant={paymentFilter === s ? 'default' : 'outline'}
@@ -259,17 +293,15 @@ export default function AdminOrdersPage() {
                     </td>
                   </tr>
                 ) : (
-                  orders.map((order) => (
-                    <tr key={order.id} className="border-b hover:bg-slate-50 transition-colors">
+                  orders.map(order => (
+                    <tr key={order.id} className="border-b hover:bg-slate-50">
                       <td className="py-3 px-4">
                         <div className="font-mono font-medium text-sm">{order.order_number}</div>
                         <div className="text-xs text-muted-foreground mt-0.5">
                           {new Date(order.created_at).toLocaleDateString('id-ID', {
                             day: 'numeric',
                             month: 'short',
-                            year: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit'
+                            year: 'numeric'
                           })}
                         </div>
                       </td>
@@ -279,7 +311,7 @@ export default function AdminOrdersPage() {
                       </td>
                       <td className="py-3 px-4">
                         <div className="text-sm">
-                          {order.order_items?.map((item, i) => (
+                          {order.order_items?.map(item => (
                             <div key={item.id}>
                               <span>{item.product_name || item.product?.name || 'Unknown'}</span>
                               {item.variant_name && (
@@ -289,7 +321,7 @@ export default function AdminOrdersPage() {
                           ))}
                         </div>
                       </td>
-                      <td className="py-3 px-4 font-semibold">{formatIDR(Number(order.total_amount))}</td>
+                      <td className="py-3 px-4 font-semibold">{formatIDR(order.total_amount)}</td>
                       <td className="py-3 px-4">
                         <Badge className={getPaymentStatusColor(order.payment_status || 'pending_payment')}>
                           {(order.payment_status || 'pending_payment').replace(/_/g, ' ')}
@@ -301,22 +333,23 @@ export default function AdminOrdersPage() {
                       <td className="py-3 px-4">
                         {order.affiliate ? (
                           <div>
-                            <div className="text-sm font-medium">{order.affiliate.profiles?.full_name || order.affiliate.referral_code}</div>
-                            <div className="text-xs text-muted-foreground">{order.affiliate.referral_code}</div>
+                            <div className="text-sm font-medium">
+                              {order.affiliate.profiles?.full_name || order.affiliate.referral_code}
+                            </div>
                             {order.commission_amount && (
-                              <Badge className="bg-emerald-100 text-emerald-700 border-0 text-xs mt-1">
-                                {formatIDR(Number(order.commission_amount))}
-                              </Badge>
+                              <div className="text-xs text-emerald-600">
+                                {formatIDR(order.commission_amount)}
+                              </div>
                             )}
                           </div>
                         ) : (
-                          <span className="text-xs text-slate-400">No Affiliate</span>
+                          <span className="text-xs text-slate-400">-</span>
                         )}
                       </td>
                       <td className="py-3 px-4">
-                        <div className="flex items-center gap-2">
-                          <Button variant="outline" size="sm" onClick={() => setSelectedOrder(order)}>Detail</Button>
-                        </div>
+                        <Button variant="outline" size="sm" onClick={() => setSelectedOrder(order)}>
+                          Detail
+                        </Button>
                       </td>
                     </tr>
                   ))
@@ -334,18 +367,18 @@ export default function AdminOrdersPage() {
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-semibold">Order Detail</h3>
               <button onClick={() => setSelectedOrder(null)}>
-                <X className="h-5 w-5 text-slate-400" />
+                <span className="text-slate-400 text-xl">&times;</span>
               </button>
             </div>
 
             <div className="space-y-4">
               {/* Order Info */}
               <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
+                <div>
                   <p className="text-xs text-muted-foreground">Order Number</p>
                   <p className="font-mono font-medium">{selectedOrder.order_number}</p>
                 </div>
-                <div className="space-y-2">
+                <div>
                   <p className="text-xs text-muted-foreground">Created</p>
                   <p className="text-sm">{new Date(selectedOrder.created_at).toLocaleString()}</p>
                 </div>
@@ -354,8 +387,7 @@ export default function AdminOrdersPage() {
               {/* Customer */}
               <div className="p-4 bg-slate-50 rounded-lg">
                 <h4 className="text-sm font-medium mb-2 flex items-center gap-2">
-                  <User className="h-4 w-4" />
-                  Customer
+                  <User className="h-4 w-4" /> Customer
                 </h4>
                 <div className="space-y-1 text-sm">
                   <div className="flex justify-between">
@@ -372,10 +404,9 @@ export default function AdminOrdersPage() {
               {/* Product */}
               <div className="p-4 bg-slate-50 rounded-lg">
                 <h4 className="text-sm font-medium mb-2 flex items-center gap-2">
-                  <Package className="h-4 w-4" />
-                  Product
+                  <Package className="h-4 w-4" /> Product
                 </h4>
-                {selectedOrder.order_items?.map((item) => (
+                {selectedOrder.order_items?.map(item => (
                   <div key={item.id} className="space-y-1 text-sm">
                     <div className="flex justify-between">
                       <span className="text-slate-500">Product</span>
@@ -394,13 +425,12 @@ export default function AdminOrdersPage() {
               {/* Payment */}
               <div className="p-4 bg-slate-50 rounded-lg">
                 <h4 className="text-sm font-medium mb-2 flex items-center gap-2">
-                  <DollarSign className="h-4 w-4" />
-                  Payment
+                  <DollarSign className="h-4 w-4" /> Payment
                 </h4>
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between">
                     <span className="text-slate-500">Total</span>
-                    <span className="font-bold text-lg">{formatIDR(Number(selectedOrder.total_amount))}</span>
+                    <span className="font-bold text-lg">{formatIDR(selectedOrder.total_amount)}</span>
                   </div>
                   <div className="flex justify-between items-center">
                     <span className="text-slate-500">Payment Status</span>
@@ -409,9 +439,9 @@ export default function AdminOrdersPage() {
                         {(selectedOrder.payment_status || 'pending_payment').replace(/_/g, ' ')}
                       </Badge>
                       <select
-                        className="text-xs border rounded px-1 py-0.5"
+                        className="text-xs border rounded px-2 py-1"
                         value={selectedOrder.payment_status || 'pending_payment'}
-                        onChange={(e) => updatePaymentStatus(selectedOrder.id, e.target.value)}
+                        onChange={e => updatePaymentStatus(selectedOrder.id, e.target.value)}
                       >
                         <option value="pending_payment">Pending Payment</option>
                         <option value="pending_verification">Pending Verification</option>
@@ -425,11 +455,11 @@ export default function AdminOrdersPage() {
                     <div className="flex items-center gap-2">
                       <Badge className={getStatusColor(selectedOrder.status)}>{selectedOrder.status}</Badge>
                       <select
-                        className="text-xs border rounded px-1 py-0.5"
+                        className="text-xs border rounded px-2 py-1"
                         value={selectedOrder.status}
-                        onChange={(e) => updateStatus(selectedOrder.id, e.target.value)}
+                        onChange={e => updateStatus(selectedOrder.id, e.target.value)}
                       >
-                        {statusOptions.map((s) => (
+                        {statusOptions.map(s => (
                           <option key={s} value={s}>{s}</option>
                         ))}
                       </select>
@@ -445,67 +475,31 @@ export default function AdminOrdersPage() {
                       <img src={selectedOrder.payment_proof} alt="Proof" className="h-32 object-contain rounded border" />
                     </div>
                   )}
-                  {selectedOrder.rejection_reason && (
-                    <div className="mt-2 p-2 bg-red-50 rounded border border-red-100">
-                      <p className="text-xs font-medium text-red-700">Rejection Reason:</p>
-                      <p className="text-sm text-red-600">{selectedOrder.rejection_reason}</p>
-                    </div>
-                  )}
                 </div>
               </div>
 
               {/* Affiliate */}
-              <div className="p-4 bg-slate-50 rounded-lg">
-                <h4 className="text-sm font-medium mb-2">Affiliate Information</h4>
-                {selectedOrder.affiliate_id && selectedOrder.affiliate ? (
+              {selectedOrder.affiliate_id && selectedOrder.affiliate && (
+                <div className="p-4 bg-slate-50 rounded-lg">
+                  <h4 className="text-sm font-medium mb-2">Affiliate Information</h4>
                   <div className="space-y-2 text-sm">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 bg-blue-100 rounded-lg">
-                        <User className="h-4 w-4 text-blue-600" />
-                      </div>
-                      <div>
-                        <p className="text-xs text-slate-500">Affiliate Name</p>
-                        <p className="font-medium">{selectedOrder.affiliate.profiles?.full_name || 'Unknown'}</p>
-                      </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Affiliate</span>
+                      <span>{selectedOrder.affiliate.profiles?.full_name || selectedOrder.affiliate.referral_code}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-slate-500">Affiliate Code</span>
+                      <span className="text-slate-500">Code</span>
                       <span className="font-mono">{selectedOrder.affiliate.referral_code}</span>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">Affiliate Email</span>
-                      <span>{selectedOrder.affiliate.profiles?.email || '-'}</span>
-                    </div>
-                    {selectedOrder.commission_amount !== null && (
-                      <div className="flex justify-between items-center">
+                    {selectedOrder.commission_amount && (
+                      <div className="flex justify-between">
                         <span className="text-slate-500">Commission</span>
-                        <div className="flex items-center gap-2">
-                          <DollarSign className="h-4 w-4 text-emerald-600" />
-                          <span className="font-bold text-emerald-600">{formatIDR(Number(selectedOrder.commission_amount))}</span>
-                        </div>
-                      </div>
-                    )}
-                    {selectedOrder.commission_status && (
-                      <div className="flex justify-between items-center">
-                        <span className="text-slate-500">Commission Status</span>
-                        <Badge className={`${
-                          selectedOrder.commission_status === 'paid' ? 'bg-emerald-100 text-emerald-700' :
-                          selectedOrder.commission_status === 'approved' ? 'bg-blue-100 text-blue-700' :
-                          selectedOrder.commission_status === 'rejected' ? 'bg-red-100 text-red-700' :
-                          'bg-amber-100 text-amber-700'
-                        } border-0`}>
-                          {selectedOrder.commission_status}
-                        </Badge>
+                        <span className="font-bold text-emerald-600">{formatIDR(selectedOrder.commission_amount)}</span>
                       </div>
                     )}
                   </div>
-                ) : (
-                  <div className="text-center py-4 text-slate-400">
-                    <User className="h-8 w-8 mx-auto text-slate-300 mb-2" />
-                    <p className="text-sm">No Affiliate Assigned</p>
-                  </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
 
             <div className="pt-4 border-t">

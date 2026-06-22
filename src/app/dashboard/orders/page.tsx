@@ -1,14 +1,12 @@
 'use client'
 
-import { useEffect, useState, useRef } from 'react'
-import Link from 'next/link'
+import { useEffect, useState, useCallback } from 'react'
+import { createBrowserClient } from '@/lib/supabase/client'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { createBrowserClient } from '@/lib/supabase/client'
-import { uploadPaymentProof } from '@/lib/supabase/storage'
-import { Loader2, Package, Upload, X, Eye, ZoomIn, AlertCircle, CheckCircle2, Clock, XCircle } from 'lucide-react'
-import { toast } from 'sonner'
+import { Loader as Loader2, Package, Clock, CircleCheck as CheckCircle, Circle as XCircle, CircleAlert as AlertCircle } from 'lucide-react'
+import { formatIDR } from '@/lib/purchase-context'
 
 interface Order {
   id: string
@@ -16,264 +14,236 @@ interface Order {
   total_amount: number
   status: string
   payment_status: string
-  order_status: string
   payment_method: string
   payment_proof: string | null
-  rejection_reason: string | null
   created_at: string
-  order_items: { id: string; product: { name: string } }[]
-  // Affiliate fields
-  affiliate_id: string | null
-  referral_code: string | null
-  referral_source: string | null
-  commission_amount: number | null
-  commission_status: string | null
-  affiliate: {
-    referral_code: string
-    profiles: { full_name: string | null } | null
-  } | null
-  payment_account: {
-    payment_name: string
-    type: string
-    bank_name: string | null
-    account_number: string | null
-    account_holder: string | null
-    qris_image: string | null
-  } | null
+  order_items: {
+    id: string
+    product_name: string | null
+    variant_name: string | null
+    product: { name: string }
+  }[]
 }
 
-const formatIDR = (amount: number) =>
-  new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(amount)
-
-const paymentStatusBadge = (status: string) => {
-  switch (status) {
-    case 'paid': return <Badge className="bg-emerald-50 text-emerald-700 hover:bg-emerald-50 border-0">Paid</Badge>
-    case 'pending_payment': return <Badge className="bg-amber-50 text-amber-700 hover:bg-amber-50 border-0">Pending Payment</Badge>
-    case 'pending_verification': return <Badge className="bg-blue-50 text-blue-700 hover:bg-blue-50 border-0">Pending Verification</Badge>
-    case 'rejected': return <Badge className="bg-red-50 text-red-700 hover:bg-red-50 border-0">Rejected</Badge>
-    default: return <Badge variant="secondary">{status || 'pending'}</Badge>
-  }
+interface OrderRow {
+  id: string
+  order_number: string
+  total_amount: number
+  status: string
+  payment_status: string
+  payment_method: string
+  payment_proof: string | null
+  created_at: string
+  order_items: {
+    id: string
+    product_name: string | null
+    variant_name: string | null
+    product: { name: string }[]
+  }[]
 }
 
-const orderStatusBadge = (status: string) => {
-  switch (status) {
-    case 'processing': return <Badge className="bg-blue-50 text-blue-700 hover:bg-blue-50 border-0">Processing</Badge>
-    case 'completed': return <Badge className="bg-emerald-50 text-emerald-700 hover:bg-emerald-50 border-0">Completed</Badge>
-    case 'pending': return <Badge className="bg-amber-50 text-amber-700 hover:bg-amber-50 border-0">Pending</Badge>
-    case 'cancelled': return <Badge className="bg-slate-100 text-slate-600 hover:bg-slate-100 border-0">Cancelled</Badge>
-    default: return <Badge variant="secondary">{status || '-'}</Badge>
-  }
-}
-
-const statusSteps = [
-  { key: 'pending_payment', label: 'Menunggu Pembayaran', icon: Clock },
-  { key: 'pending_verification', label: 'Verifikasi', icon: Eye },
-  { key: 'paid', label: 'Pembayaran Dikonfirmasi', icon: CheckCircle2 },
-  { key: 'processing', label: 'Diproses', icon: Package },
-  { key: 'completed', label: 'Selesai', icon: CheckCircle2 },
-]
-
-const stepIndex = (status: string) => {
-  const map: Record<string, number> = {
-    pending_payment: 0,
-    pending_verification: 1,
-    paid: 2,
-    processing: 3,
-    completed: 4,
-    rejected: -1,
-    cancelled: -1,
-  }
-  return map[status] ?? 0
-}
-
-export default function OrdersPage() {
+export default function MemberOrdersPage() {
   const [loading, setLoading] = useState(true)
   const [orders, setOrders] = useState<Order[]>([])
+  const [filter, setFilter] = useState('all')
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null)
-  const [proofFile, setProofFile] = useState<File | null>(null)
-  const [proofPreview, setProofPreview] = useState<string | null>(null)
-  const [uploadingProof, setUploadingProof] = useState(false)
-  const [zoomImage, setZoomImage] = useState<string | null>(null)
-  const proofRef = useRef<HTMLInputElement>(null)
   const supabase = createBrowserClient()
 
-  useEffect(() => {
-    const fetchOrders = async () => {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
-      const { data } = await supabase
-        .from('orders')
-        .select(`
-          id, order_number, total_amount, status, payment_status, order_status,
-          payment_method, payment_proof, rejection_reason, created_at,
-          affiliate_id, referral_code, referral_source, commission_amount, commission_status,
-          order_items(id, product:products(name)),
-          affiliate:affiliates(referral_code, profiles(full_name)),
-          payment_account:payment_accounts(payment_name, type, bank_name, account_number, account_holder, qris_image)
-        `)
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false })
-      const formatted: Order[] = (data as any[])?.map(row => ({
-        id: row.id,
-        order_number: row.order_number,
-        total_amount: row.total_amount,
-        status: row.status,
-        payment_status: row.payment_status,
-        order_status: row.order_status,
-        payment_method: row.payment_method,
-        payment_proof: row.payment_proof,
-        rejection_reason: row.rejection_reason,
-        created_at: row.created_at,
-        affiliate_id: row.affiliate_id,
-        referral_code: row.referral_code,
-        referral_source: row.referral_source,
-        commission_amount: row.commission_amount,
-        commission_status: row.commission_status,
-        order_items: (row.order_items || []).map((item: any) => ({
-          id: item.id,
-          product: Array.isArray(item.product) ? item.product[0] : item.product
-        })),
-        affiliate: Array.isArray(row.affiliate) ? row.affiliate[0] : row.affiliate,
-        payment_account: Array.isArray(row.payment_account) ? row.payment_account[0] : row.payment_account,
-      })) || []
-      setOrders(formatted)
-      setLoading(false)
+  const fetchOrders = useCallback(async () => {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+
+    let query = supabase
+      .from('orders')
+      .select(`
+        id, order_number, total_amount, status, payment_status,
+        payment_method, payment_proof, created_at,
+        order_items(id, product_name, variant_name, product:products(name))
+      `)
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+
+    if (filter !== 'all') {
+      query = query.eq('payment_status', filter)
     }
+
+    const { data } = await query
+    const formatted: Order[] = (data as OrderRow[])?.map(row => ({
+      ...row,
+      order_items: (row.order_items || []).map(item => ({
+        id: item.id,
+        product_name: item.product_name,
+        variant_name: item.variant_name,
+        product: item.product?.[0] || { name: '-' }
+      }))
+    })) || []
+
+    setOrders(formatted)
+    setLoading(false)
+  }, [filter, supabase])
+
+  useEffect(() => {
     fetchOrders()
-  }, [])
+  }, [fetchOrders])
 
-  const handleProofFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    const allowed = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp']
-    if (!allowed.includes(file.type)) { toast.error('Format tidak didukung. Gunakan JPG, PNG, atau WEBP'); return }
-    if (file.size > 5 * 1024 * 1024) { toast.error('Ukuran file maksimal 5 MB'); return }
-    setProofFile(file)
-    setProofPreview(URL.createObjectURL(file))
+  // Real-time subscription
+  useEffect(() => {
+    const channel = supabase
+      .channel('member-orders-realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'orders'
+        },
+        () => fetchOrders()
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [fetchOrders, supabase])
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'paid':
+      case 'completed':
+        return 'bg-emerald-100 text-emerald-700'
+      case 'pending':
+        return 'bg-amber-100 text-amber-700'
+      case 'processing':
+        return 'bg-blue-100 text-blue-700'
+      case 'cancelled':
+        return 'bg-red-100 text-red-700'
+      default:
+        return 'bg-slate-100 text-slate-700'
+    }
   }
 
-  const handleUploadProof = async () => {
-    if (!proofFile || !selectedOrder) return
-    setUploadingProof(true)
-    const url = await uploadPaymentProof(proofFile, selectedOrder.id)
-    if (!url) { toast.error('Gagal mengunggah bukti'); setUploadingProof(false); return }
-    const { error } = await supabase.from('orders').update({
-      payment_proof: url,
-      payment_status: 'pending_verification',
-    }).eq('id', selectedOrder.id)
-    if (error) { toast.error('Gagal menyimpan bukti'); setUploadingProof(false); return }
-    toast.success('Bukti pembayaran terkirim! Admin akan segera memverifikasi.')
-    setUploadingProof(false)
-    setProofFile(null)
-    setProofPreview(null)
-    setOrders(prev => prev.map(o => o.id === selectedOrder.id ? { ...o, payment_proof: url, payment_status: 'pending_verification' } : o))
-    setSelectedOrder(prev => prev ? { ...prev, payment_proof: url, payment_status: 'pending_verification' } : null)
+  const getPaymentStatusColor = (status: string) => {
+    switch (status) {
+      case 'paid':
+        return 'bg-emerald-100 text-emerald-700'
+      case 'pending_payment':
+        return 'bg-amber-100 text-amber-700'
+      case 'pending_verification':
+        return 'bg-blue-100 text-blue-700'
+      case 'rejected':
+        return 'bg-red-100 text-red-700'
+      default:
+        return 'bg-slate-100 text-slate-700'
+    }
   }
 
-  if (loading) return <div className="flex justify-center py-12"><Loader2 className="h-8 w-8 animate-spin" /></div>
+  const getPaymentStatusIcon = (status: string) => {
+    switch (status) {
+      case 'paid':
+        return <CheckCircle className="h-4 w-4" />
+      case 'pending_payment':
+        return <Clock className="h-4 w-4" />
+      case 'pending_verification':
+        return <AlertCircle className="h-4 w-4" />
+      case 'rejected':
+        return <XCircle className="h-4 w-4" />
+      default:
+        return <Clock className="h-4 w-4" />
+    }
+  }
+
+  const filters = [
+    { value: 'all', label: 'All' },
+    { value: 'pending_payment', label: 'Pending Payment' },
+    { value: 'pending_verification', label: 'Pending Verification' },
+    { value: 'paid', label: 'Paid' }
+  ]
+
+  if (loading) {
+    return (
+      <div className="flex justify-center py-16">
+        <Loader2 className="h-8 w-8 animate-spin" />
+      </div>
+    )
+  }
 
   return (
     <div>
-      <div className="mb-8">
-        <h1 className="text-2xl font-semibold text-slate-900">My Orders</h1>
-        <p className="text-slate-500 mt-1">{orders.length} order</p>
+      <div className="mb-6">
+        <h1 className="text-3xl font-bold">My Orders</h1>
+        <p className="text-muted-foreground">{orders.length} orders</p>
+      </div>
+
+      <div className="flex gap-2 mb-6">
+        {filters.map(f => (
+          <Button
+            key={f.value}
+            variant={filter === f.value ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setFilter(f.value)}
+          >
+            {f.label}
+          </Button>
+        ))}
       </div>
 
       {orders.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center">
-            <Package className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
-            <h3 className="font-semibold mb-2">Belum ada order</h3>
-            <p className="text-muted-foreground mb-4">Mulai belanja untuk melihat pesanan Anda di sini</p>
-            <Link href="/products"><Button>Jelajahi Produk</Button></Link>
+            <Package className="h-12 w-12 mx-auto mb-3 text-slate-300" />
+            <p className="text-muted-foreground">Belum ada order</p>
           </CardContent>
         </Card>
       ) : (
         <div className="space-y-4">
-          {orders.map(order => {
-            const pStatus = order.payment_status || 'pending_payment'
-            const oStatus = order.order_status || order.status || 'pending'
-            const isRejected = pStatus === 'rejected'
-            const canUploadProof = pStatus === 'pending_payment' || pStatus === 'rejected'
-
-            return (
-              <Card key={order.id} className="border-slate-200">
-                <CardContent className="p-5">
-                  <div className="flex items-start justify-between flex-wrap gap-4">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-3 flex-wrap mb-2">
-                        <span className="font-mono font-medium text-slate-900 text-sm">{order.order_number || `#${order.id.slice(0, 8)}`}</span>
-                        {paymentStatusBadge(pStatus)}
-                        {orderStatusBadge(oStatus)}
-                      </div>
-                      <p className="text-sm text-slate-600 mb-1">
-                        {order.order_items?.map((item, i) => (
-                          <span key={item.id}>{item.product?.name}{i < order.order_items.length - 1 ? ', ' : ''}</span>
-                        ))}
-                      </p>
-                      <p className="text-xs text-slate-400">
-                        {new Date(order.created_at).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}
-                        {order.payment_account && ` · ${order.payment_account.payment_name}`}
-                      </p>
+          {orders.map(order => (
+            <Card
+              key={order.id}
+              className="cursor-pointer hover:shadow-md transition-shadow"
+              onClick={() => setSelectedOrder(order)}
+            >
+              <CardContent className="p-4">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <div className="font-mono font-medium">{order.order_number}</div>
+                    <div className="text-sm text-muted-foreground mt-1">
+                      {new Date(order.created_at).toLocaleDateString('id-ID', {
+                        day: 'numeric',
+                        month: 'short',
+                        year: 'numeric'
+                      })}
                     </div>
-                    <div className="text-right">
-                      <p className="font-bold text-lg text-slate-900">{formatIDR(Number(order.total_amount))}</p>
-                      <Button size="sm" variant="outline" className="mt-2" onClick={() => setSelectedOrder(order)}>
-                        Detail
-                      </Button>
+                    <div className="mt-2">
+                      {order.order_items.map(item => (
+                        <div key={item.id} className="text-sm">
+                          <span className="font-medium">{item.product_name || item.product?.name}</span>
+                          {item.variant_name && (
+                            <span className="text-blue-600 ml-1">({item.variant_name})</span>
+                          )}
+                        </div>
+                      ))}
                     </div>
                   </div>
-
-                  {/* Rejected notice */}
-                  {isRejected && order.rejection_reason && (
-                    <div className="mt-3 bg-red-50 border border-red-100 rounded-lg p-3 flex items-start gap-2">
-                      <XCircle className="h-4 w-4 text-red-500 mt-0.5 shrink-0" />
-                      <div>
-                        <p className="text-xs font-medium text-red-700">Pembayaran Ditolak</p>
-                        <p className="text-xs text-red-600 mt-0.5">{order.rejection_reason}</p>
-                      </div>
+                  <div className="text-right">
+                    <div className="font-bold">{formatIDR(order.total_amount)}</div>
+                    <div className="mt-2">
+                      <Badge className={getPaymentStatusColor(order.payment_status)}>
+                        <span className="flex items-center gap-1">
+                          {getPaymentStatusIcon(order.payment_status)}
+                          {order.payment_status?.replace(/_/g, ' ')}
+                        </span>
+                      </Badge>
                     </div>
-                  )}
-
-                  {/* Progress tracker */}
-                  {!isRejected && pStatus !== 'rejected' && (
-                    <div className="mt-4 pt-4 border-t border-slate-100">
-                      <div className="flex items-center gap-0">
-                        {statusSteps.slice(0, 4).map((step, i) => {
-                          const current = stepIndex(pStatus === 'paid' ? 'paid' : pStatus === 'pending_verification' ? 'pending_verification' : pStatus === 'pending_payment' ? 'pending_payment' : oStatus === 'processing' ? 'processing' : pStatus)
-                          const done = i <= current
-                          return (
-                            <div key={step.key} className="flex items-center flex-1">
-                              <div className={`h-2 w-2 rounded-full shrink-0 ${done ? 'bg-blue-500' : 'bg-slate-200'}`} />
-                              {i < 3 && <div className={`h-0.5 flex-1 mx-1 ${i < current ? 'bg-blue-500' : 'bg-slate-200'}`} />}
-                            </div>
-                          )
-                        })}
-                      </div>
-                      <div className="flex justify-between mt-1">
-                        {['Pending', 'Verifikasi', 'Paid', 'Diproses'].map((label, i) => {
-                          const current = stepIndex(pStatus === 'paid' ? 'paid' : pStatus === 'pending_verification' ? 'pending_verification' : pStatus === 'pending_payment' ? 'pending_payment' : pStatus)
-                          return <span key={label} className={`text-xs ${i <= current ? 'text-blue-600 font-medium' : 'text-slate-400'}`}>{label}</span>
-                        })}
-                      </div>
+                    <div className="mt-1">
+                      <Badge className={getStatusColor(order.status)}>
+                        {order.status}
+                      </Badge>
                     </div>
-                  )}
-
-                  {/* Inline proof upload for pending_payment */}
-                  {canUploadProof && (
-                    <div className="mt-3 pt-3 border-t border-slate-100">
-                      <p className="text-xs font-medium text-slate-700 mb-2">
-                        {isRejected ? 'Upload ulang bukti pembayaran:' : 'Upload bukti pembayaran:'}
-                      </p>
-                      <Button size="sm" variant="outline" onClick={() => setSelectedOrder(order)} className="h-8 text-xs">
-                        <Upload className="h-3 w-3 mr-1" />Upload Bukti
-                      </Button>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            )
-          })}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
         </div>
       )}
 
@@ -282,146 +252,83 @@ export default function OrdersPage() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6 space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold">Detail Order</h3>
-              <button onClick={() => { setSelectedOrder(null); setProofFile(null); setProofPreview(null) }}>
-                <X className="h-5 w-5 text-slate-400" />
+              <h3 className="text-lg font-semibold">Order Detail</h3>
+              <button onClick={() => setSelectedOrder(null)}>
+                <span className="text-slate-400 text-xl">&times;</span>
               </button>
             </div>
 
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between"><span className="text-slate-500">Order Number</span><span className="font-mono font-medium">{selectedOrder.order_number}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Total</span><span className="font-bold">{formatIDR(Number(selectedOrder.total_amount))}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Payment</span>{paymentStatusBadge(selectedOrder.payment_status || 'pending_payment')}</div>
-              <div className="flex justify-between"><span className="text-slate-500">Order</span>{orderStatusBadge(selectedOrder.order_status || selectedOrder.status)}</div>
+            <div className="space-y-4">
+              <div className="flex justify-between py-2 border-b">
+                <span className="text-slate-500">Order Number</span>
+                <span className="font-mono font-medium">{selectedOrder.order_number}</span>
+              </div>
 
-              {/* Affiliate Information Section */}
-              {selectedOrder.affiliate_id && selectedOrder.affiliate && (
-                <div className="mt-3 pt-3 border-t border-slate-100">
-                  <p className="text-xs font-medium text-slate-600 mb-2">Affiliate Information</p>
-                  <div className="bg-blue-50 rounded-lg p-3 space-y-1">
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">Affiliate Name</span>
-                      <span className="font-medium">{selectedOrder.affiliate.profiles?.full_name || selectedOrder.affiliate.referral_code}</span>
+              <div className="flex justify-between py-2 border-b">
+                <span className="text-slate-500">Created</span>
+                <span>{new Date(selectedOrder.created_at).toLocaleString()}</span>
+              </div>
+
+              <div className="py-2 border-b">
+                <span className="text-slate-500">Product</span>
+                <div className="mt-2">
+                  {selectedOrder.order_items.map(item => (
+                    <div key={item.id}>
+                      <div className="font-medium">{item.product_name || item.product?.name}</div>
+                      {item.variant_name && (
+                        <div className="text-sm text-blue-600">Variant: {item.variant_name}</div>
+                      )}
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">Affiliate Code</span>
-                      <span className="font-mono">{selectedOrder.affiliate.referral_code}</span>
-                    </div>
-                    {selectedOrder.referral_source && (
-                      <div className="flex justify-between">
-                        <span className="text-slate-500">Referral Source</span>
-                        <span className="capitalize">{selectedOrder.referral_source}</span>
-                      </div>
-                    )}
-                    {selectedOrder.commission_amount !== null && selectedOrder.commission_amount > 0 && (
-                      <div className="flex justify-between">
-                        <span className="text-slate-500">Commission</span>
-                        <span className="font-medium text-emerald-600">{formatIDR(Number(selectedOrder.commission_amount))}</span>
-                      </div>
-                    )}
-                    {selectedOrder.commission_status && (
-                      <div className="flex justify-between">
-                        <span className="text-slate-500">Commission Status</span>
-                        <Badge className={`${
-                          selectedOrder.commission_status === 'paid' ? 'bg-emerald-100 text-emerald-700' :
-                          selectedOrder.commission_status === 'approved' ? 'bg-blue-100 text-blue-700' :
-                          'bg-amber-100 text-amber-700'
-                        } border-0 text-xs`}>
-                          {selectedOrder.commission_status}
-                        </Badge>
-                      </div>
-                    )}
-                  </div>
+                  ))}
                 </div>
-              )}
+              </div>
 
-              {/* No Affiliate Assigned */}
-              {!selectedOrder.affiliate_id && (
-                <div className="mt-3 pt-3 border-t border-slate-100">
-                  <p className="text-xs text-slate-400 italic">No Affiliate Assigned</p>
-                </div>
-              )}
+              <div className="flex justify-between py-2 border-b">
+                <span className="text-slate-500">Total</span>
+                <span className="font-bold text-lg">{formatIDR(selectedOrder.total_amount)}</span>
+              </div>
 
-              {selectedOrder.payment_account && (
-                <>
-                  <div className="flex justify-between"><span className="text-slate-500">Metode</span><span>{selectedOrder.payment_account.payment_name}</span></div>
-                  {selectedOrder.payment_account.bank_name && <div className="flex justify-between"><span className="text-slate-500">Bank/E-Wallet</span><span>{selectedOrder.payment_account.bank_name}</span></div>}
-                  {selectedOrder.payment_account.account_number && <div className="flex justify-between"><span className="text-slate-500">Number</span><span className="font-mono">{selectedOrder.payment_account.account_number}</span></div>}
-                  {selectedOrder.payment_account.account_holder && <div className="flex justify-between"><span className="text-slate-500">Account Holder</span><span>{selectedOrder.payment_account.account_holder}</span></div>}
-                  {selectedOrder.payment_account.qris_image && (
-                    <div>
-                      <p className="text-slate-500 mb-2">QRIS:</p>
-                      <div className="relative inline-block">
-                        <img src={selectedOrder.payment_account.qris_image} alt="QRIS" className="h-40 object-contain border rounded-lg cursor-pointer" onClick={() => setZoomImage(selectedOrder.payment_account!.qris_image)} />
-                        <button className="absolute top-2 right-2 bg-white shadow rounded p-1" onClick={() => setZoomImage(selectedOrder.payment_account!.qris_image)}>
-                          <ZoomIn className="h-3.5 w-3.5 text-slate-600" />
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
+              <div className="flex justify-between py-2 border-b">
+                <span className="text-slate-500">Payment Status</span>
+                <Badge className={getPaymentStatusColor(selectedOrder.payment_status)}>
+                  <span className="flex items-center gap-1">
+                    {getPaymentStatusIcon(selectedOrder.payment_status)}
+                    {selectedOrder.payment_status?.replace(/_/g, ' ')}
+                  </span>
+                </Badge>
+              </div>
 
-              {selectedOrder.rejection_reason && (
-                <div className="bg-red-50 border border-red-100 rounded-lg p-3">
-                  <p className="text-xs font-medium text-red-700">Alasan Penolakan:</p>
-                  <p className="text-sm text-red-600 mt-1">{selectedOrder.rejection_reason}</p>
-                </div>
-              )}
+              <div className="flex justify-between py-2 border-b">
+                <span className="text-slate-500">Order Status</span>
+                <Badge className={getStatusColor(selectedOrder.status)}>
+                  {selectedOrder.status}
+                </Badge>
+              </div>
+
+              <div className="flex justify-between py-2 border-b">
+                <span className="text-slate-500">Payment Method</span>
+                <span>{selectedOrder.payment_method || '-'}</span>
+              </div>
 
               {selectedOrder.payment_proof && (
-                <div>
-                  <p className="text-slate-500 mb-2">Bukti Pembayaran:</p>
-                  <img src={selectedOrder.payment_proof} alt="Bukti" className="h-32 object-contain border rounded-lg cursor-pointer" onClick={() => setZoomImage(selectedOrder.payment_proof)} />
+                <div className="py-2">
+                  <span className="text-slate-500 text-sm">Payment Proof:</span>
+                  <img
+                    src={selectedOrder.payment_proof}
+                    alt="Proof"
+                    className="mt-2 h-32 object-contain rounded border"
+                  />
                 </div>
               )}
             </div>
 
-            {/* Proof Upload - only if pending or rejected */}
-            {(selectedOrder.payment_status === 'pending_payment' || selectedOrder.payment_status === 'rejected') && (
-              <div className="border-t pt-4 space-y-3">
-                <p className="text-sm font-medium text-slate-700">
-                  {selectedOrder.payment_status === 'rejected' ? 'Upload Ulang Bukti Pembayaran' : 'Upload Bukti Pembayaran'}
-                </p>
-                {!proofPreview ? (
-                  <div className="border-2 border-dashed border-slate-200 rounded-lg p-5 text-center cursor-pointer hover:border-blue-400 transition-colors" onClick={() => proofRef.current?.click()}>
-                    <Upload className="h-6 w-6 mx-auto mb-1 text-slate-300" />
-                    <p className="text-xs text-slate-500">Klik untuk upload</p>
-                    <p className="text-xs text-slate-400">JPG, PNG, WEBP — max 5MB</p>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    <div className="relative inline-block">
-                      <img src={proofPreview} alt="Preview" className="h-36 object-contain border rounded-lg" />
-                      <button onClick={() => { setProofFile(null); setProofPreview(null); if (proofRef.current) proofRef.current.value = '' }}
-                        className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full h-5 w-5 flex items-center justify-center">
-                        <X className="h-3 w-3" />
-                      </button>
-                    </div>
-                  </div>
-                )}
-                <input ref={proofRef} type="file" accept="image/jpeg,image/jpg,image/png,image/webp" className="hidden" onChange={handleProofFile} />
-                <Button onClick={handleUploadProof} disabled={!proofFile || uploadingProof} className="w-full">
-                  {uploadingProof ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Mengunggah...</> : <><Upload className="h-4 w-4 mr-2" />Kirim Bukti</>}
-                </Button>
-              </div>
-            )}
-
-            <Button variant="outline" className="w-full" onClick={() => { setSelectedOrder(null); setProofFile(null); setProofPreview(null) }}>
-              Tutup
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={() => setSelectedOrder(null)}
+            >
+              Close
             </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Zoom Modal */}
-      {zoomImage && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[60] p-4" onClick={() => setZoomImage(null)}>
-          <div className="relative" onClick={e => e.stopPropagation()}>
-            <img src={zoomImage} alt="Zoom" className="max-h-[85vh] max-w-[85vw] rounded-xl" />
-            <button onClick={() => setZoomImage(null)} className="absolute -top-3 -right-3 bg-white text-slate-800 rounded-full h-8 w-8 flex items-center justify-center shadow-lg">
-              <X className="h-4 w-4" />
-            </button>
           </div>
         </div>
       )}
