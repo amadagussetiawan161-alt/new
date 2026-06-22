@@ -15,8 +15,23 @@ export async function POST(request: NextRequest) {
 
   if (!order_id) return NextResponse.json({ error: 'Missing order_id' }, { status: 400 })
 
-  // Find the order
-  const { data: order } = await supabase.from('orders').select('*, order_items(product_id, price, quantity)').eq('id', order_id).single()
+  // Find the order with affiliate info
+  const { data: order } = await supabase
+    .from('orders')
+    .select(`
+      *,
+      order_items(product_id, price, quantity),
+      affiliate:affiliates(
+        id,
+        referral_code,
+        commission_rate,
+        commission_type,
+        status,
+        profiles(full_name, email)
+      )
+    `)
+    .eq('id', order_id)
+    .single()
   if (!order) return NextResponse.json({ error: 'Order not found' }, { status: 404 })
 
   if (status === 'success' || status === 'paid' || status === 'settlement') {
@@ -37,6 +52,63 @@ export async function POST(request: NextRequest) {
       status: 'completed',
       transaction_id: transaction_id || `TXN-${Date.now()}`,
     })
+
+    // Handle affiliate commission - will be handled by database trigger
+    // But we also handle it here as a fallback and to update related tables
+    if (order.affiliate_id && order.affiliate) {
+      const affiliate = order.affiliate
+
+      // Calculate commission
+      let commission = 0
+      const commissionRate = affiliate.commission_rate || 0.10
+      const commissionType = affiliate.commission_type || 'percentage'
+
+      if (commissionType === 'percentage') {
+        commission = order.total_amount * commissionRate
+      } else {
+        commission = commissionRate
+      }
+
+      // Update order with commission
+      await supabase.from('orders').update({
+        commission_amount: commission,
+        commission_status: 'pending'
+      }).eq('id', order_id)
+
+      // Create referral record if not exists
+      const { data: existingRef } = await supabase
+        .from('referrals')
+        .select('id')
+        .eq('affiliate_id', order.affiliate_id)
+        .eq('referred_user_id', order.user_id)
+        .single()
+
+      if (!existingRef) {
+        await supabase.from('referrals').insert({
+          affiliate_id: order.affiliate_id,
+          referred_user_id: order.user_id,
+          referral_code: affiliate.referral_code,
+          status: 'converted',
+          commission_amount: commission,
+          commission_status: 'pending',
+          click_id: order.click_id,
+          source: order.referral_source,
+          url: order.referral_url
+        })
+      } else {
+        await supabase.from('referrals').update({
+          status: 'converted',
+          commission_amount: commission,
+          commission_status: 'pending'
+        }).eq('id', existingRef.id)
+      }
+
+      // Update affiliate totals
+      await supabase.from('affiliates').update({
+        total_referrals: (affiliate.total_referrals || 0) + 1,
+        total_earnings: (affiliate.total_earnings || 0) + commission
+      }).eq('id', order.affiliate_id)
+    }
 
     // Grant user products
     for (const item of order.order_items || []) {
@@ -67,25 +139,6 @@ export async function POST(request: NextRequest) {
           product_name: product.name,
           license_key: licenseKey,
         })
-      }
-    }
-
-    // Handle affiliate commission
-    if (order.referral_code && order.affiliate_id) {
-      const { data: product } = await supabase.from('products').select('affiliate_enabled, commission_type, commission_value').eq('id', order.order_items?.[0]?.product_id).single()
-      if (product?.affiliate_enabled && product.commission_value) {
-        let commission = 0
-        if (product.commission_type === 'percentage') commission = order.total_amount * (product.commission_value / 100)
-        else commission = product.commission_value
-
-        await supabase.from('orders').update({ commission_amount: commission }).eq('id', order_id)
-        await supabase.from('referrals').insert({
-          affiliate_id: order.affiliate_id,
-          referred_user_id: order.user_id,
-          referral_code: order.referral_code,
-          status: 'converted',
-          commission_amount: commission,
-        }).then(() => {}) // ignore duplicates
       }
     }
 

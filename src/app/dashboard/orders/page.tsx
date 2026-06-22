@@ -22,6 +22,16 @@ interface Order {
   rejection_reason: string | null
   created_at: string
   order_items: { id: string; product: { name: string } }[]
+  // Affiliate fields
+  affiliate_id: string | null
+  referral_code: string | null
+  referral_source: string | null
+  commission_amount: number | null
+  commission_status: string | null
+  affiliate: {
+    referral_code: string
+    profiles: { full_name: string | null } | null
+  } | null
   payment_account: {
     payment_name: string
     type: string
@@ -96,7 +106,9 @@ export default function OrdersPage() {
         .select(`
           id, order_number, total_amount, status, payment_status, order_status,
           payment_method, payment_proof, rejection_reason, created_at,
+          affiliate_id, referral_code, referral_source, commission_amount, commission_status,
           order_items(id, product:products(name)),
+          affiliate:affiliates(referral_code, profiles(full_name)),
           payment_account:payment_accounts(payment_name, type, bank_name, account_number, account_holder, qris_image)
         `)
         .eq('user_id', user.id)
@@ -112,10 +124,16 @@ export default function OrdersPage() {
         payment_proof: row.payment_proof,
         rejection_reason: row.rejection_reason,
         created_at: row.created_at,
+        affiliate_id: row.affiliate_id,
+        referral_code: row.referral_code,
+        referral_source: row.referral_source,
+        commission_amount: row.commission_amount,
+        commission_status: row.commission_status,
         order_items: (row.order_items || []).map((item: any) => ({
           id: item.id,
           product: Array.isArray(item.product) ? item.product[0] : item.product
         })),
+        affiliate: Array.isArray(row.affiliate) ? row.affiliate[0] : row.affiliate,
         payment_account: Array.isArray(row.payment_account) ? row.payment_account[0] : row.payment_account,
       })) || []
       setOrders(formatted)
@@ -275,12 +293,61 @@ export default function OrdersPage() {
               <div className="flex justify-between"><span className="text-slate-500">Total</span><span className="font-bold">{formatIDR(Number(selectedOrder.total_amount))}</span></div>
               <div className="flex justify-between"><span className="text-slate-500">Payment</span>{paymentStatusBadge(selectedOrder.payment_status || 'pending_payment')}</div>
               <div className="flex justify-between"><span className="text-slate-500">Order</span>{orderStatusBadge(selectedOrder.order_status || selectedOrder.status)}</div>
+
+              {/* Affiliate Information Section */}
+              {selectedOrder.affiliate_id && selectedOrder.affiliate && (
+                <div className="mt-3 pt-3 border-t border-slate-100">
+                  <p className="text-xs font-medium text-slate-600 mb-2">Affiliate Information</p>
+                  <div className="bg-blue-50 rounded-lg p-3 space-y-1">
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Affiliate Name</span>
+                      <span className="font-medium">{selectedOrder.affiliate.profiles?.full_name || selectedOrder.affiliate.referral_code}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Affiliate Code</span>
+                      <span className="font-mono">{selectedOrder.affiliate.referral_code}</span>
+                    </div>
+                    {selectedOrder.referral_source && (
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Referral Source</span>
+                        <span className="capitalize">{selectedOrder.referral_source}</span>
+                      </div>
+                    )}
+                    {selectedOrder.commission_amount !== null && selectedOrder.commission_amount > 0 && (
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Commission</span>
+                        <span className="font-medium text-emerald-600">{formatIDR(Number(selectedOrder.commission_amount))}</span>
+                      </div>
+                    )}
+                    {selectedOrder.commission_status && (
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Commission Status</span>
+                        <Badge className={`${
+                          selectedOrder.commission_status === 'paid' ? 'bg-emerald-100 text-emerald-700' :
+                          selectedOrder.commission_status === 'approved' ? 'bg-blue-100 text-blue-700' :
+                          'bg-amber-100 text-amber-700'
+                        } border-0 text-xs`}>
+                          {selectedOrder.commission_status}
+                        </Badge>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* No Affiliate Assigned */}
+              {!selectedOrder.affiliate_id && (
+                <div className="mt-3 pt-3 border-t border-slate-100">
+                  <p className="text-xs text-slate-400 italic">No Affiliate Assigned</p>
+                </div>
+              )}
+
               {selectedOrder.payment_account && (
                 <>
                   <div className="flex justify-between"><span className="text-slate-500">Metode</span><span>{selectedOrder.payment_account.payment_name}</span></div>
                   {selectedOrder.payment_account.bank_name && <div className="flex justify-between"><span className="text-slate-500">Bank/E-Wallet</span><span>{selectedOrder.payment_account.bank_name}</span></div>}
-                  {selectedOrder.payment_account.account_number && <div className="flex justify-between"><span className="text-slate-500">Nomor</span><span className="font-mono">{selectedOrder.payment_account.account_number}</span></div>}
-                  {selectedOrder.payment_account.account_holder && <div className="flex justify-between"><span className="text-slate-500">Atas Nama</span><span>{selectedOrder.payment_account.account_holder}</span></div>}
+                  {selectedOrder.payment_account.account_number && <div className="flex justify-between"><span className="text-slate-500">Number</span><span className="font-mono">{selectedOrder.payment_account.account_number}</span></div>}
+                  {selectedOrder.payment_account.account_holder && <div className="flex justify-between"><span className="text-slate-500">Account Holder</span><span>{selectedOrder.payment_account.account_holder}</span></div>}
                   {selectedOrder.payment_account.qris_image && (
                     <div>
                       <p className="text-slate-500 mb-2">QRIS:</p>

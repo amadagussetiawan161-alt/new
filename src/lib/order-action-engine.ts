@@ -1,4 +1,5 @@
 import { SupabaseClient } from '@supabase/supabase-js'
+import { buildAffiliateExecutionContext, replaceTemplateVariables } from './affiliate-tracking'
 
 export type OrderActionType =
   | 'product_purchase'
@@ -31,6 +32,25 @@ export interface ExecutionContext {
   product: Record<string, any>
   order: Record<string, any>
   licenseTemplate: Record<string, any> | null
+  // Affiliate context
+  affiliate: {
+    id: string | null
+    code: string | null
+    name: string | null
+    email: string | null
+  } | null
+  referral: {
+    source: string | null
+    click_id: string | null
+    url: string | null
+  } | null
+  commission: {
+    id: string | null
+    type: string | null
+    rate: number | null
+    amount: number | null
+    status: string | null
+  } | null
 }
 
 function generateExecutionCode(): string {
@@ -134,7 +154,22 @@ async function executeAction(
       case 'webhook': {
         const { url, method = 'POST', headers = {} } = action.config
         if (!url) return { success: false, error: 'Webhook URL not configured' }
-        const payload = { order_id: ctx.orderId, user_id: ctx.userId, product_id: ctx.productId, event: 'order.paid' }
+
+        // Build payload with affiliate context
+        const payload = {
+          order_id: ctx.orderId,
+          user_id: ctx.userId,
+          product_id: ctx.productId,
+          event: 'order.paid',
+          // Affiliate context
+          affiliate_id: ctx.affiliate?.id || null,
+          affiliate_code: ctx.affiliate?.code || null,
+          affiliate_name: ctx.affiliate?.name || null,
+          referral_source: ctx.referral?.source || null,
+          referral_click_id: ctx.referral?.click_id || null,
+          commission_amount: ctx.commission?.amount || null,
+          commission_status: ctx.commission?.status || null
+        }
         const res = await fetch(url, {
           method,
           headers: { 'Content-Type': 'application/json', ...headers },
@@ -147,10 +182,19 @@ async function executeAction(
       case 'api_request': {
         const { url, method = 'GET', headers = {}, body } = action.config
         if (!url) return { success: false, error: 'API URL not configured' }
+
+        // Build API request with affiliate context
+        const requestBody = body ? {
+          ...body,
+          affiliate_id: ctx.affiliate?.id || null,
+          affiliate_code: ctx.affiliate?.code || null,
+          commission_amount: ctx.commission?.amount || null
+        } : undefined
+
         const res = await fetch(url, {
           method,
           headers: { 'Content-Type': 'application/json', ...headers },
-          body: body ? JSON.stringify(body) : undefined,
+          body: requestBody ? JSON.stringify(requestBody) : undefined,
         })
         const data = await res.json().catch(() => null)
         if (!res.ok) return { success: false, error: `API request failed: HTTP ${res.status}`, output: data }
@@ -246,7 +290,7 @@ export async function runOrderActions(
   // Fetch order + items + products
   const { data: order, error: orderErr } = await supabase
     .from('orders')
-    .select('id, user_id, order_items(product_id, product:products(id, name, license_enabled, download_type, download_file, download_url, license_duration, custom_license_days))')
+    .select('id, user_id, affiliate_id, referral_code, click_id, referral_source, referral_url, commission_status, order_items(product_id, product:products(id, name, license_enabled, download_type, download_file, download_url, license_duration, custom_license_days))')
     .eq('id', orderId)
     .single()
 
@@ -254,6 +298,9 @@ export async function runOrderActions(
 
   const { data: templates } = await supabase.from('license_templates').select('*').eq('is_active', true).limit(1)
   const licenseTemplate = templates?.[0] || null
+
+  // Build affiliate context
+  const affiliateContext = await buildAffiliateExecutionContext(supabase, orderId)
 
   const results: { name: string; status: string }[] = []
 
@@ -281,6 +328,10 @@ export async function runOrderActions(
       product,
       order,
       licenseTemplate,
+      // Include affiliate context
+      affiliate: affiliateContext.affiliate?.id ? affiliateContext.affiliate as any : null,
+      referral: affiliateContext.referral?.source ? affiliateContext.referral as any : null,
+      commission: affiliateContext.commission?.id ? affiliateContext.commission as any : null
     }
 
     for (const action of actions) {

@@ -9,6 +9,13 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { createBrowserClient } from '@/lib/supabase/client'
 import { uploadPaymentProof } from '@/lib/supabase/storage'
+import {
+  parseReferralParams,
+  getStoredAffiliateContext,
+  generateClickId,
+  trackAffiliateClick,
+  linkOrderToAffiliate
+} from '@/lib/affiliate-tracking'
 import { toast } from 'sonner'
 import {
   Loader2, CreditCard, Tag, Building2, Smartphone, QrCode,
@@ -53,6 +60,11 @@ function CheckoutContent() {
   const [discount, setDiscount] = useState(0)
   const [form, setForm] = useState({ name: '', email: '', phone: '', notes: '' })
 
+  // Affiliate tracking state
+  const [affiliateCode, setAffiliateCode] = useState<string | null>(null)
+  const [affiliateClickId, setAffiliateClickId] = useState<string | null>(null)
+  const [affiliateSource, setAffiliateSource] = useState<string>('direct')
+
   // After order state
   const [createdOrderId, setCreatedOrderId] = useState<string | null>(null)
   const [createdOrderNumber, setCreatedOrderNumber] = useState('')
@@ -93,10 +105,40 @@ function CheckoutContent() {
         })) || []
         setCartItems(formatted)
       }
+
+      // Handle affiliate tracking
+      const currentUrl = window.location.href
+      const referralParams = parseReferralParams(currentUrl)
+
+      if (referralParams.referralCode) {
+        // Found referral code in URL
+        const clickId = referralParams.clickId || generateClickId()
+        setAffiliateCode(referralParams.referralCode)
+        setAffiliateClickId(clickId)
+        setAffiliateSource(referralParams.source)
+
+        // Track the click
+        await trackAffiliateClick(supabase, {
+          referralCode: referralParams.referralCode,
+          clickId,
+          source: referralParams.source,
+          url: currentUrl,
+          userAgent: navigator.userAgent
+        })
+      } else {
+        // Check localStorage for stored affiliate context
+        const stored = getStoredAffiliateContext()
+        if (stored.affiliateCode) {
+          setAffiliateCode(stored.affiliateCode)
+          setAffiliateClickId(stored.clickId)
+          setAffiliateSource(stored.source || 'direct')
+        }
+      }
+
       setLoading(false)
     }
     fetchData()
-  }, [router, productSlug])
+  }, [router, productSlug, supabase])
 
   const subtotal = cartItems.reduce((sum, item) => sum + (item.price * item.quantity), 0)
   const total = Math.max(0, subtotal - discount)
@@ -155,6 +197,20 @@ function CheckoutContent() {
 
     if (!productSlug) await supabase.from('cart_items').delete().eq('user_id', userId)
     if (couponApplied) await supabase.from('coupons').update({ usage_count: (couponApplied.usage_count || 0) + 1 }).eq('id', couponApplied.id)
+
+    // Link order to affiliate if referral code exists
+    if (affiliateCode) {
+      const currentUrl = window.location.href
+      await linkOrderToAffiliate(
+        supabase,
+        order.id,
+        userId,
+        affiliateCode,
+        affiliateClickId,
+        affiliateSource,
+        currentUrl
+      )
+    }
 
     setCreatedOrderId(order.id)
     setCreatedOrderNumber(orderNumber)
